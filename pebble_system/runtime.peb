@@ -1,5 +1,6 @@
 import system.kernel.proc
 import system.kernel.syscall
+import system.kernel.thread
 import system.kernel.term
 import system.lib.base
 
@@ -721,6 +722,30 @@ def is_vfs_mode():
         return 1
     return 0
 
+def virtual_dev_nodes():
+    return ["dev", "dev/null", "dev/stderr", "dev/stdin", "dev/stdout", "dev/tty"]
+
+def is_virtual_dev_path(name):
+    nodes = virtual_dev_nodes()
+    i = 0
+    while i < len(nodes):
+        if nodes[i] == name:
+            return 1
+        i = i + 1
+    return 0
+
+def virtual_dev_is_directory(name):
+    return name == "dev"
+
+def append_missing_name(items, name):
+    i = 0
+    while i < len(items):
+        if items[i] == name:
+            return 0
+        i = i + 1
+    append(items, name)
+    return 1
+
 def vfs_boot_mode():
     return active_fs_mode() == "vfs-import"
 
@@ -997,20 +1022,43 @@ def delete_vfs_user_record(name):
     return 0
 
 def fs_list():
+    names = []
     if is_hostfs_mode():
-        return sort_strings(raw_list_files())
-    db = load_vfs()
-    names = vfs_visible_names(db)
-    host_names = raw_list_files()
+        names = sort_strings(raw_list_files())
+    else:
+        db = load_vfs()
+        names = vfs_visible_names(db)
+        host_names = raw_list_files()
+        i = 0
+        while i < len(host_names):
+            name = host_names[i]
+            if is_system_path(name):
+                append(names, name)
+            i = i + 1
+    dev_nodes = virtual_dev_nodes()
+    merged = []
     i = 0
-    while i < len(host_names):
-        name = host_names[i]
-        if is_system_path(name):
-            append(names, name)
+    while i < len(names):
+        append(merged, names[i])
         i = i + 1
-    return sort_strings(names)
+    i = 0
+    while i < len(dev_nodes):
+        exists = 0
+        j = 0
+        while j < len(merged):
+            if merged[j] == dev_nodes[i]:
+                exists = 1
+            j = j + 1
+        if exists == 0:
+            append(merged, dev_nodes[i])
+        i = i + 1
+    return sort_strings(merged)
 
 def fs_exists(name):
+    if is_virtual_dev_path(name):
+        if virtual_dev_is_directory(name):
+            return 0
+        return 1
     if is_hostfs_mode():
         return raw_file_exists(name)
     if is_system_path(name):
@@ -1022,6 +1070,8 @@ def fs_exists(name):
     return dict_has_key(db["files"], name)
 
 def fs_directory_exists(name):
+    if is_virtual_dev_path(name):
+        return virtual_dev_is_directory(name)
     if is_hostfs_mode():
         return raw_directory_exists(name)
     if is_system_path(name):
@@ -1089,6 +1139,8 @@ def fs_write(name, text):
     return text
 
 def fs_time(name):
+    if is_virtual_dev_path(name):
+        return current_time()
     if is_hostfs_mode():
         return raw_file_time(name)
     if is_system_path(name):
@@ -1111,6 +1163,9 @@ def runtime_process_states():
 def runtime_process_context():
     return system.kernel.proc.process_context()
 
+def runtime_thread_states():
+    return system.kernel.thread.thread_states()
+
 def runtime_syscall_table():
     return system.kernel.syscall.syscall_table()
 
@@ -1131,6 +1186,57 @@ def sys_fd_stat(fd):
 
 def sys_fd_readdir(fd):
     return fd_readdir(fd)
+
+def thread_spawn_source(name, source, argv):
+    return system.kernel.thread.thread_spawn_source(name, source, argv)
+
+def thread_join(tid):
+    return system.kernel.thread.thread_join(tid)
+
+def thread_status(tid):
+    return system.kernel.thread.thread_status(tid)
+
+def thread_self():
+    return system.kernel.thread.thread_self()
+
+def thread_yield():
+    return system.kernel.thread.thread_yield()
+
+def thread_list():
+    return system.kernel.thread.thread_list()
+
+def open_device(path, mode):
+    return sys_fd_open(path, mode)
+
+def stdout_device_fd():
+    return open_device("/dev/stdout", "a")
+
+def stderr_device_fd():
+    return open_device("/dev/stderr", "a")
+
+def tty_device_fd(mode):
+    return open_device("/dev/tty", mode)
+
+def null_device_fd():
+    return open_device("/dev/null", "a")
+
+def device_write(path, text):
+    fd = open_device(path, "a")
+    written = sys_fd_write(fd, text)
+    sys_fd_close(fd)
+    return written
+
+def stdout_write(text):
+    return device_write("/dev/stdout", text)
+
+def stdout_write_line(text):
+    return stdout_write(text + "\n")
+
+def stderr_write(text):
+    return device_write("/dev/stderr", text)
+
+def stderr_write_line(text):
+    return stderr_write(text + "\n")
 
 def chdir(name):
     target = normalize_path(name)
@@ -1159,7 +1265,7 @@ def list_files():
         elif has_prefix(name, prefix):
             append(out, strip_prefix(name, prefix))
         i = i + 1
-    return out
+    return sort_strings(out)
 
 def file_exists(name):
     return fs_exists(storage_name(normalize_path(name)))
@@ -1195,7 +1301,7 @@ def file_time(name):
     return fs_time(storage_name(normalize_path(name)))
 
 def term_write_line(text):
-    system.kernel.term.write_text(text + "\r\n")
+    stdout_write(text + "\r\n")
 
 def screen_rows():
     return system.kernel.term.rows()
@@ -1225,7 +1331,7 @@ def read_key_timeout(timeout_ms):
     return system.kernel.term.read_key_timeout(timeout_ms)
 
 def draw_text(text):
-    system.kernel.term.write_text(text)
+    stdout_write(text)
 
 def tty_owner_pgid():
     return system.kernel.term.tty_owner_pgid()

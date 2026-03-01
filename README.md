@@ -149,216 +149,98 @@ integration coverage. To include the full shell runtime regression set, run:
 PEBBLE_RUN_SLOW_TESTS=1 python3 -m unittest discover -s tests
 ```
 
-## Project history
+## Evolution
 
-### Phase 1: Toy OS origin
+### Before the modern-system push
 
-Pebble OS started as a toy operating system experiment with one simple rule:
-the filesystem should feel like a single folder.
+PebbleOS began as a toy OS experiment with a very small goal: store files,
+edit them, and run a tiny language from them.
 
-The first version focused on the minimum OS loop:
+The first phases were:
 
-- create files
-- modify files
-- delete files
-- list files
-- run a tiny language from files stored in the flat disk
+- a flat single-folder filesystem with create, modify, delete, and list
+- the first Pebble language with only variables, arithmetic, and `print`
+- a gradual move to Python-like syntax with indentation, functions, loops,
+  conditionals, strings, lists, dicts, comments, and modules
+- the rename from a toy OS into `Pebble OS`
+- the split between the visible Pebble system and the hidden Python host
+- the move of shell behavior from Python into Pebble files under `system/...`
 
-At that stage, the project was mainly a Python shell around a tiny disk folder.
+That was the bootstrap phase. The important result was not “modern OS”
+features yet, but a different architecture: Pebble stopped being just a guest
+language and started becoming the language that drives the system itself.
 
-### Phase 2: Pebble language appears
+### Preparing for a modern system
 
-The next major step was creating the Pebble language itself. It started as an
-extremely small language with only:
+Once self-hosting became realistic, the project shifted from “Pebble can grow
+Pebble” to “PebbleOS can start acting like a real system.”
 
-- variables
-- arithmetic with `+`, `-`, `*`
-- `print`
+That preparation phase added:
 
-That first version was enough to prove that files in the OS could contain
-programs, but it was still far from being able to evolve the system.
+- rooted paths, directories, mounts, and multiple filesystem backends
+- interpreter and bytecode execution modes
+- Pebble-native memory, heap, and a resumable bytecode VM
+- a Pebble runtime scheduler model with foreground/background task handling
+- `F1` detach, `jobs`, `fg`, and now `ps` for process inspection
+- a stronger userland layout with `system/bin`, `system/lib`, and `system/kernel`
+- shell features closer to a Unix-like environment: PATH lookup, redirection,
+  pipelines, `sh`, `bash`, login/profile loading, and more external commands
+- terminal and TTY work so interactive Pebble programs depend less on ad hoc
+  Python-only paths
+- a minimal `/dev` bootstrap through the fd layer, with `/dev/tty`,
+  `/dev/stdin`, `/dev/stdout`, `/dev/stderr`, and `/dev/null` available as
+  device-style paths
+- the Pebble runtime filesystem view now exposes `/dev` as a visible virtual
+  directory, so `cd /dev`, `ls`, and `find /dev` can inspect device nodes even
+  before a full `devfs` mount layer exists
+- Pebble runtime output helpers now route through `/dev/stdout`, and a
+  Pebble-native `tty` command can inspect the current `/dev/tty` state without
+  adding a Python-only shell command
+- `ls` now shows only the current directory's direct children instead of dumping the full recursive file set, and a Pebble-native `tree` command provides recursive structure output when you do want the full subtree
+- thread design is now documented in `docs/THREADING.md`, and Pebble exposes a first bootstrap thread ABI built on the VM scheduler with `thread_spawn_source`, `thread_join`, `thread_status`, `thread_self`, and `thread_list`
 
-### Phase 3: Pebble grows into a usable language
-
-Pebble then moved closer to Python-style syntax and a more practical scripting
-model by adding:
-
-- four-space indentation
-- `if`, `elif`, `else`
-- `for`
-- `while`
-- functions and `return`
-- comparisons
-- strings
-- lists
-- dicts
-- indexing and assignment
-- comments
-- `break`, `continue`, `pass`
-
-These changes turned Pebble from a calculator-like toy language into a small
-general-purpose scripting language that could read files, transform text, and
-manage structured state.
-
-### Phase 4: Shift toward self-hosting
-
-Once the language became expressive enough, the project started moving from
-"toy OS" toward a self-hosting direction. That shift included:
-
-- a Pebble-managed kernel ABI split with process metadata and syscall-facing modules
-- shell redirection and multi-stage pipelines for command composition
-- a `/system/bin/*.peb` external command model, with most file and text commands moved out of shell builtins
-- fd-backed stdio routing and pipe-backed shell execution so files, redirection, and pipelines share one host-side I/O model
-- PATH-based external command lookup, `/bin` compatibility mapping, and first Linux-like userland commands such as `env`, `which`, and `find`
-- Phase 4 userland expansion with `grep`, filtered `find`, multi-arg `which`, richer `env`, and a minimal `kill` path wired into the process model
-- shell/session features closer to a real login shell: `bg`, `source`, automatic `/etc/profile` loading, and default `/etc/passwd`, `/etc/group`, `/etc/fstab` placeholders
-- unified launcher behavior for Pebble programs: direct `.peb` execution by command name and `&` background launch syntax, while `run/exec/runbg/execbg` remain compatibility entry points
-- a Pebble-native `top` command for live process snapshots on top of the shared process table
-- a standard `sh` compatibility command at `/system/bin/sh.peb`, `/bin/sh` path mapping, and formal launcher/login documentation in `docs/LAUNCHER.md` and `docs/SHELL_LOGIN.md`
-- a Pebble-native `bash.peb` front-end that can run scripts, `bash -c COMMAND`, and a simple interactive REPL without adding a Python-only command path
-- interactive `bash` now runs on the attached foreground terminal path, so `bash` REPL uses Pebble `input()` directly instead of the scheduler task fallback
-- foreground VM tasks now support scheduler-visible `blocked-input` and `blocked-tty` states, so interactive programs like `bash` and `nano` can wait on stdin or raw keys without dropping out of the VM task model
-- TTY/input behavior is now documented explicitly in `docs/TTY_INPUT.md`, including keyboard response requests, raw vs cooked terminal mode, and the per-task key queue used by foreground interactive programs
-- foreground TTY handling now gives attached interactive programs higher keyboard priority and waits briefly to decode delayed escape sequences such as arrow keys before falling back to a bare `ESC`
-- terminal control now has a dedicated Pebble kernel module in `pebble_system/kernel/term.peb`, with syscall-visible `term.state`, `term.mode`, and `term.owner_pgid` so Pebble-native interactive programs depend less on ad hoc host function names
-- the test suite now defaults to a faster core run, while the slower shell/TTY integration coverage moves behind `PEBBLE_RUN_SLOW_TESTS=1`
-
-- renaming the system to `Pebble OS`
-- separating the visible OS from the hidden Python host layer
-- renaming the Python package to `pebble_bootloader`
-- mounting `system/...` as the Pebble-managed runtime area
-- moving shell behavior into Pebble files instead of hardcoding it in Python
-
-### Phase 5: Python becomes the hidden bootloader
-
-The Python layer is now intentionally treated as a hidden bootloader. It still
-provides the capabilities Pebble does not yet implement for itself:
-
-- interpreting Pebble code
-- low-level filesystem access
-- terminal I/O and raw key input
-- host bridge builtins
-
-### Phase 6: Visible system behavior moves into Pebble
-
-At the same time, more and more visible system behavior has moved upward into
-Pebble itself:
-
-- `system/runtime.peb` is the shared runtime and standard-library layer
-- `system/shell.peb` owns shell command behavior, help, intro, and prompt
-- `system/nano.peb` is the runtime-managed editor
-- `system/clock_tick.peb` and `system/count_tick.peb` add Pebble-written ticking demo apps that update once per second
-- `system/atari_pong.peb` adds a Pebble-written Atari-style terminal game to the system tools
-- Pebble OS now uses a rooted path model with directories, `cd`, `pwd`, `mkdir`, and `rmdir`, while still mounting `system/...` as the runtime subtree
-- Pebble programs can now run in two modes: direct interpreter execution with `run`, and bytecode execution with `exec`
-- Pebble language now supports floating-point numbers and numeric division in both interpreter and bytecode modes
-- Pebble now supports both built-in modules and file-based user modules through a common import mechanism
-- Pebble runtime math now includes pure-Pebble `abs`, `pow`, `sqrt`, `sin`, `cos`, and `tan` helpers without a Python math bridge
-- Pebble runtime now includes a Pebble-native virtual RAM layer through `import memory`, giving programs explicit alloc/read/write behavior without changing the Python host memory model
-- Pebble runtime now adds block memory operations, a Pebble-native `heap` allocator, and a more explicit bytecode VM frame/value stack model to move execution semantics further away from raw Python object management
-- the shell can read host local time through a small bridge and expose it as a runtime-managed `time` command
-- shell and filesystem timestamps now include seconds, and `run`/`exec` stream program output as it is produced instead of buffering until process exit
-- foreground programs now support terminal control shortcuts at the system level: `Ctrl-C` interrupts and returns to the shell, while `Ctrl-Z` detaches the job into the background without leaving the terminal in raw mode
-- Pebble terminal programs can poll input with a timeout, which gives Pebble a basic real-time game loop capability
-- the filesystem exposes per-file timestamps so `ls` can show a time for each file
-- Pebble OS supports both direct host files `hostfs` and Pebble-managed virtual filesystems `vfs` through a unified Pebble filesystem layer
-- Pebble language imports now support nested module paths like `system.kernel.proc`, and Pebble OS now has the first kernel-module split for ABI inventory, errno definitions, and process transition wrappers
-
-### Current meaning of the architecture
-
-Pebble OS has already crossed an important bootstrap boundary: ordinary shell
-behavior and more of the visible system now live in Pebble rather than in
-Python.
-
-Python is still the host, but Pebble now controls much more of the system's
-own behavior and can increasingly be used to evolve the system itself.
-
-## Roadmap
-
-The long-term direction is to keep shrinking the Python bootloader and keep
-moving system behavior into Pebble.
-
-### Completed
-
-- Rooted Pebble OS filesystem with directories and explicit `system/...` mount behavior
-- Pebble language with Python-style indentation and basic control flow
-- File I/O, strings, lists, and dicts
-- Runtime-managed shell command layer in `system/shell.peb`
-- Shared runtime helpers in `system/runtime.peb`
-- Runtime-managed full-screen editor in `system/nano.peb`
-- Hidden bootloader architecture in `pebble_bootloader/`
-- Skill support for adding new Pebble OS system commands
-
-### Near-term
-
-- Move more user tools from `pebble_disk/` into `system/*.peb`
-- Add more Linux-style shell commands such as `echo` and `find`
-- Clean up the shell surface so only the preferred command set remains
-- Expand `system/runtime.peb` into a more stable standard library
-
-### Mid-term
-
-- Build Pebble-written tokenizer, inspector, and rewriter tools under `system/`
-- Define a stable "core Pebble" subset for bootstrapping work
-- Use Pebble tools to transform and generate more Pebble runtime code
-- Reduce how often runtime improvements require bootloader changes
-
-### Long-term
-
-- Make Pebble the main place where Pebble OS evolves
+This is the current transition point: PebbleOS is no longer just a bootstrap
+demo, but it is not yet a full modern system either. It now has enough
+runtime, shell, process, and terminal structure to start building one on top
+of the Pebble-managed layers.
 
 ## Toward A Working System
 
-From the current bootstrap point, the shortest credible path to a minimum
-working modern system is:
+The next stages are:
 
 ### Stage 1: Observable single-user system
 
-- establish a stable process/task model
-- expose process inspection and lifecycle commands
-- standardize foreground/background semantics
-- keep shell, runtime, and scheduler behavior visible from Pebble
+- stabilize the process/task model
+- expose lifecycle commands beyond inspection
+- unify `ps`, `jobs`, foreground attach, and background execution
 
 ### Stage 2: System service layer
 
-- add standard streams, logging, timers, and event delivery
-- define a stable runtime ABI for apps and services
-- add long-running Pebble services managed by the system
+- standard streams, logging, timers, and event delivery
+- long-running Pebble-managed services
+- a clearer runtime ABI for apps and system modules
 
 ### Stage 3: Isolation and safety
 
-- split tasks into protected process domains
-- define capability or permission boundaries for files, terminal, and services
-- prevent one crashing program from corrupting unrelated tasks
+- protected process domains
+- capability or permission boundaries
+- failure isolation between programs
 
 ### Stage 4: Program model and packaging
 
-- define executable/module metadata
-- add a package manager and dependency rules
-- support reproducible app loading and versioned runtime interfaces
+- executable and module metadata
+- package management and dependency rules
+- reproducible loading with versioned interfaces
 
 ### Stage 5: Practical OS services
 
 - networking
-- configuration management
-- service management
-- better filesystem metadata and durability
-- debugger, profiler, and better system diagnostics
+- configuration and service management
+- stronger filesystem metadata and durability
+- debugger, profiler, and better diagnostics
 
 ### Stage 6: Modern usability
 
-- robust TTY behavior with pipes, redirection, and richer job control
-- interactive apps that can detach and reattach cleanly
-- eventually a graphics/windowing layer if Pebble OS grows past terminal-first use
-
-### Current execution step
-
-The current repository has started Stage 1 by adding:
-
-- resumable bytecode VM tasks
-- a Pebble runtime scheduler data model
-- foreground detach to background with `F1`
-- a system-visible `ps` command for process inspection
-- Keep Python as a very small host VM and hardware/terminal bridge
-- Build a stronger self-hosting toolchain in Pebble
-- Move from "Pebble programs running inside the OS" toward "Pebble managing the OS"
+- richer TTY behavior with solid job control
+- interactive apps that detach and reattach cleanly
+- eventually a graphical layer if PebbleOS grows beyond terminal-first use

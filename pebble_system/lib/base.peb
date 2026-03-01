@@ -18,6 +18,13 @@ PROC_STATE_DONE = "done"
 PROC_STATE_HALTED = "halted"
 PROC_STATE_ERROR = "error"
 
+THREAD_STATE_READY = "ready"
+THREAD_STATE_RUNNING = "running"
+THREAD_STATE_BLOCKED_INPUT = "blocked-input"
+THREAD_STATE_BLOCKED_TTY = "blocked-tty"
+THREAD_STATE_HALTED = "halted"
+THREAD_STATE_ERROR = "error"
+
 SIG_INT = 2
 SIG_TERM = 15
 SIG_CHLD = 17
@@ -34,6 +41,9 @@ def errno_table():
 
 def process_state_table():
     return {"ready": PROC_STATE_READY, "running": PROC_STATE_RUNNING, "foreground": PROC_STATE_FOREGROUND, "done": PROC_STATE_DONE, "halted": PROC_STATE_HALTED, "error": PROC_STATE_ERROR}
+
+def thread_state_table():
+    return {"ready": THREAD_STATE_READY, "running": THREAD_STATE_RUNNING, "blocked-input": THREAD_STATE_BLOCKED_INPUT, "blocked-tty": THREAD_STATE_BLOCKED_TTY, "halted": THREAD_STATE_HALTED, "error": THREAD_STATE_ERROR}
 
 def default_env():
     return {"PATH": DEFAULT_ENV["PATH"], "HOME": DEFAULT_ENV["HOME"], "USER": DEFAULT_ENV["USER"], "SHELL": DEFAULT_ENV["SHELL"]}

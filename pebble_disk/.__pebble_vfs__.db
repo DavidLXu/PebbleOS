@@ -15,7 +15,7 @@ docs/readme.peb	2026-03-01, 18:04:33	print 1
 etc/fstab	2026-03-01, 20:57:27	# device mountpoint fstype options\n
 etc/group	2026-03-01, 20:57:27	root:x:0:\n
 etc/passwd	2026-03-01, 20:57:27	root:x:0:0:root:/root:/bin/sh\n
-etc/profile	2026-03-01, 22:59:22	export PROFILE_FLAG=loaded\n
+etc/profile	2026-03-01, 23:40:05	export PROFILE_FLAG=loaded\n
 find_name_dir/alpha.txt	2026-03-01, 20:52:19	
 find_name_dir/beta.log	2026-03-01, 20:52:19	
 find_test_dir/file_a.txt	2026-03-01, 20:49:05	

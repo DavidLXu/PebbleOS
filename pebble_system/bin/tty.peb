@@ -1,0 +1,10 @@
+import system.kernel.term
+
+state = system.kernel.term.tty_snapshot()
+
+print "/dev/tty"
+print "mode=" + state["mode"]
+print "owner_pgid=" + str(state["owner_pgid"])
+print "interactive=" + str(state["interactive"])
+print "rows=" + str(state["rows"])
+print "cols=" + str(state["cols"])

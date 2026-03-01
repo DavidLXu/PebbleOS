@@ -636,6 +636,12 @@ class PebbleShell(cmd.Cmd):
                 "vm_snapshot_task": self._host_vm_snapshot_task,
                 "vm_restore_task": self._host_vm_restore_task,
                 "vm_drop_task": self._host_vm_drop_task,
+                "thread_spawn_source_host": self._host_thread_spawn_source,
+                "thread_join_host": self._host_thread_join,
+                "thread_status_host": self._host_thread_status,
+                "thread_self_host": self._host_thread_self,
+                "thread_yield_host": self._host_thread_yield,
+                "list_thread_records": self._host_list_thread_records,
                 "cwd": self._host_cwd,
                 "chdir": self._host_chdir,
                 "filesystem_file_count": self._host_filesystem_file_count,
@@ -665,6 +671,9 @@ class PebbleShell(cmd.Cmd):
         return input(prompt)
 
     def _open_fd_record(self, logical_path: str, mode: str) -> int:
+        device_kind = self._device_kind_for_path(logical_path)
+        if device_kind != "":
+            return self._open_device_fd(device_kind, logical_path, mode)
         path = self._logical_path_to_host(logical_path)
         if mode not in {"r", "w", "a"}:
             raise FileSystemError(f"unsupported fd mode '{mode}'")
@@ -678,6 +687,27 @@ class PebbleShell(cmd.Cmd):
         self._fd_table[fd] = record
         if mode == "w":
             path.write_text("", encoding="utf-8")
+        return fd
+
+    def _device_kind_for_path(self, logical_path: str) -> str:
+        if logical_path in {"/dev", "/dev/tty", "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/null"}:
+            return logical_path
+        return ""
+
+    def _open_device_fd(self, device_kind: str, logical_path: str, mode: str) -> int:
+        allowed_modes: dict[str, set[str]] = {
+            "/dev": {"r"},
+            "/dev/tty": {"r", "w", "a"},
+            "/dev/stdin": {"r"},
+            "/dev/stdout": {"w", "a"},
+            "/dev/stderr": {"w", "a"},
+            "/dev/null": {"r", "w", "a"},
+        }
+        if mode not in allowed_modes.get(device_kind, set()):
+            raise FileSystemError(f"unsupported mode '{mode}' for device '{logical_path}'")
+        fd = self._next_fd
+        self._next_fd = self._next_fd + 1
+        self._fd_table[fd] = {"kind": "device", "device": device_kind, "path": logical_path, "mode": mode, "cursor": 0}
         return fd
 
     def _create_pipe_fds(self) -> tuple[int, int]:
@@ -704,6 +734,15 @@ class PebbleShell(cmd.Cmd):
         if record is None:
             return ""
         kind = record.get("kind")
+        if kind == "device":
+            device_kind = record.get("device")
+            if device_kind == "/dev":
+                return ""
+            if device_kind == "/dev/null":
+                return ""
+            if device_kind in {"/dev/stdin", "/dev/tty"}:
+                return input("")
+            return ""
         if kind == "pipe":
             pipe = record.get("pipe")
             if not isinstance(pipe, dict):
@@ -731,6 +770,21 @@ class PebbleShell(cmd.Cmd):
         if record is None:
             return
         kind = record.get("kind")
+        if kind == "device":
+            device_kind = record.get("device")
+            if device_kind == "/dev":
+                return
+            if device_kind == "/dev/null":
+                return
+            if device_kind == "/dev/stderr":
+                sys.stderr.write(text)
+                sys.stderr.flush()
+                return
+            if device_kind in {"/dev/stdout", "/dev/tty"}:
+                sys.stdout.write(text)
+                sys.stdout.flush()
+                return
+            return
         if kind == "pipe":
             pipe = record.get("pipe")
             if not isinstance(pipe, dict):
@@ -1174,6 +1228,15 @@ class PebbleShell(cmd.Cmd):
         record = self._fd_table.get(args[0])
         if record is None:
             raise PebbleError(f"line {line_number}: fd {args[0]} is not open")
+        if record.get("kind") == "device":
+            device_kind = record.get("device")
+            if device_kind == "/dev":
+                return ""
+            if device_kind == "/dev/null":
+                return ""
+            if device_kind in {"/dev/stdin", "/dev/tty"}:
+                return self._fd_readline(args[0])
+            return ""
         if record.get("kind") == "pipe":
             pipe = record.get("pipe")
             if not isinstance(pipe, dict):
@@ -1218,6 +1281,9 @@ class PebbleShell(cmd.Cmd):
                 if isinstance(buffer, list):
                     size = len(buffer)
             return {"size": size, "path": "<pipe>", "mode": record["mode"], "kind": "pipe"}
+        if record.get("kind") == "device":
+            path = str(record.get("path", ""))
+            return {"size": 0, "path": path, "mode": record["mode"], "kind": "device"}
         path = record.get("path")
         if not isinstance(path, Path):
             raise PebbleError(f"line {line_number}: fd {args[0]} is not stat-able")
@@ -1229,6 +1295,10 @@ class PebbleShell(cmd.Cmd):
         record = self._fd_table.get(args[0])
         if record is None:
             raise PebbleError(f"line {line_number}: fd {args[0]} is not open")
+        if record.get("kind") == "device":
+            if record.get("device") == "/dev":
+                return ["null", "stderr", "stdin", "stdout", "tty"]
+            raise PebbleError(f"line {line_number}: fd {args[0]} is not a directory")
         path = Path(record["path"])
         if not path.is_dir():
             raise PebbleError(f"line {line_number}: fd {args[0]} is not a directory")
@@ -1252,6 +1322,7 @@ class PebbleShell(cmd.Cmd):
                 (inner_args[0] / 1000.0) if len(inner_args) == 1 and isinstance(inner_args[0], int) else None,
             )
         )
+        host_functions["thread_self_host"] = lambda inner_args, inner_line: task_ref["task"].task_id if task_ref["task"] is not None else 0
         interpreter = PebbleBytecodeInterpreter(
             self.fs.root,
             input_provider=lambda prompt="": self._vm_task_input_provider(task_ref["task"], prompt),
@@ -1366,6 +1437,7 @@ class PebbleShell(cmd.Cmd):
                 (inner_args[0] / 1000.0) if len(inner_args) == 1 and isinstance(inner_args[0], int) else None,
             )
         )
+        host_functions["thread_self_host"] = lambda inner_args, inner_line: task_ref["task"].task_id if task_ref["task"] is not None else 0
         interpreter = PebbleBytecodeInterpreter(
             self.fs.root,
             input_provider=lambda prompt="": self._vm_task_input_provider(task_ref["task"], prompt),
@@ -1398,6 +1470,70 @@ class PebbleShell(cmd.Cmd):
             if self._vm_tasks.pop(args[0], None) is None:
                 raise PebbleError(f"line {line_number}: vm task {args[0]} does not exist")
         return 0
+
+    def _thread_record(self, task: VMTask) -> dict[str, object]:
+        status = task.status
+        exit_status = 0
+        if status == "error":
+            exit_status = 1
+        return {
+            "tid": task.task_id,
+            "pid": task.ppid,
+            "state": status,
+            "name": task.program,
+            "argv": list(task.argv),
+            "cwd": task.cwd,
+            "exit_status": exit_status,
+            "attached": 1 if task.attached else 0,
+            "outputs": list(task.interpreter.output),
+        }
+
+    def _host_thread_spawn_source(self, args: list[object], line_number: int) -> int:
+        if len(args) != 3 or not isinstance(args[0], str) or not isinstance(args[1], str):
+            raise PebbleError(f"line {line_number}: thread_spawn_source_host() expects name, source, argv")
+        argv = args[2]
+        if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
+            raise PebbleError(f"line {line_number}: thread_spawn_source_host() expects argv as list[str]")
+        return self._host_vm_create_task([args[1], argv], line_number)
+
+    def _host_thread_join(self, args: list[object], line_number: int) -> dict[str, object]:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: thread_join_host() expects one integer tid")
+        while True:
+            with self._vm_lock:
+                task = self._vm_tasks.get(args[0])
+            if task is None:
+                raise PebbleError(f"line {line_number}: thread {args[0]} does not exist")
+            if task.status in {"halted", "error"}:
+                return self._thread_record(task)
+            self._host_vm_step_task([args[0], 50], line_number)
+
+    def _host_thread_status(self, args: list[object], line_number: int) -> str:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: thread_status_host() expects one integer tid")
+        with self._vm_lock:
+            task = self._vm_tasks.get(args[0])
+        if task is None:
+            raise PebbleError(f"line {line_number}: thread {args[0]} does not exist")
+        return task.status
+
+    def _host_thread_self(self, args: list[object], line_number: int) -> int:
+        if args:
+            raise PebbleError(f"line {line_number}: thread_self_host() expected 0 arguments but got {len(args)}")
+        return 0
+
+    def _host_thread_yield(self, args: list[object], line_number: int) -> int:
+        if args:
+            raise PebbleError(f"line {line_number}: thread_yield_host() expected 0 arguments but got {len(args)}")
+        time.sleep(0)
+        return 0
+
+    def _host_list_thread_records(self, args: list[object], line_number: int) -> list[dict[str, object]]:
+        if args:
+            raise PebbleError(f"line {line_number}: list_thread_records() expected 0 arguments but got {len(args)}")
+        with self._vm_lock:
+            tasks = list(self._vm_tasks.values())
+        return [self._thread_record(task) for task in tasks]
 
     def _host_cwd(self, args: list[object], line_number: int) -> str:
         if args:
@@ -1729,7 +1865,7 @@ class PebbleShell(cmd.Cmd):
     def _host_term_owner_pgid(self, args: list[object], line_number: int) -> int:
         if args:
             raise PebbleError(f"line {line_number}: term_owner_pgid() expected 0 arguments but got {len(args)}")
-        return self._current_foreground_pgid or 0
+        return self._foreground_pgid or 0
 
     def _host_term_mode(self, args: list[object], line_number: int) -> str:
         if args:
@@ -1742,7 +1878,7 @@ class PebbleShell(cmd.Cmd):
         if args:
             raise PebbleError(f"line {line_number}: term_state() expected 0 arguments but got {len(args)}")
         return {
-            "owner_pgid": self._current_foreground_pgid or 0,
+            "owner_pgid": self._foreground_pgid or 0,
             "mode": "raw" if self._foreground_terminal_raw else "cooked",
             "interactive": 1 if sys.stdin.isatty() else 0,
             "foreground_raw": 1 if self._foreground_terminal_raw else 0,

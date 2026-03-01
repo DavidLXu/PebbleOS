@@ -91,6 +91,7 @@ Milestone 1 introduces these Pebble entry points:
 - [`/Users/xulixin/LX_OS/pebble_system/lib/base.peb`](/Users/xulixin/LX_OS/pebble_system/lib/base.peb)
 - [`/Users/xulixin/LX_OS/pebble_system/kernel/syscall.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/syscall.peb)
 - [`/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb)
+- [`/Users/xulixin/LX_OS/pebble_system/kernel/thread.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/thread.peb)
 - [`/Users/xulixin/LX_OS/pebble_system/kernel/term.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/term.peb)
 
 These modules currently provide:
@@ -106,6 +107,7 @@ These modules currently provide:
 
 - `fs`
 - `proc`
+- `thread`
 - `term`
 - `clock`
 - `memory`
@@ -152,6 +154,44 @@ Current TTY state fields:
 This keeps interactive programs such as `nano`, `bash`, and `top` on a
 Pebble-visible ABI even though raw terminal access is still bridged by the
 Python host substrate.
+
+## Thread ABI
+
+Milestone A exposes a bootstrap thread ABI through
+[`/Users/xulixin/LX_OS/pebble_system/kernel/thread.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/thread.peb).
+
+Current thread syscalls:
+
+- `thread.spawn_source`
+- `thread.join`
+- `thread.status`
+- `thread.self`
+- `thread.yield`
+- `thread.list`
+
+This initial thread layer is intentionally built on the existing VM task
+scheduler. It is a process-shared execution bootstrap, not a final POSIX thread
+implementation.
+
+## Device FD Bootstrap
+
+The host substrate now exposes a minimal device-file bridge through the
+existing fd API. Pebble programs can open these logical device paths with
+`fd_open()` / `sys_fd_open()`:
+
+- `/dev`
+- `/dev/tty`
+- `/dev/stdin`
+- `/dev/stdout`
+- `/dev/stderr`
+- `/dev/null`
+
+This is still a bootstrap device model rather than a full `devfs`, but it
+shrinks the terminal bootloader boundary toward generic fd/device semantics.
+Pebble runtime path functions now also expose these device nodes through the
+visible filesystem view, so commands such as `cd /dev`, `ls`, and `find /dev`
+can inspect them even though the underlying host filesystem does not contain a
+real on-disk `/dev` directory.
 
 ## Error Model
 

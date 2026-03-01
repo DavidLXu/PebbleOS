@@ -902,6 +902,22 @@ class PebbleInterpreterTests(unittest.TestCase):
         nano_source = Path("/Users/xulixin/LX_OS/pebble_system/nano.peb").read_text(encoding="utf-8")
         rendered: list[str] = []
         keys = iter(["^X"])
+        next_fd = {"value": 3}
+        fd_table: dict[int, dict[str, object]] = {}
+
+        def fd_open(args, line):
+            fd = next_fd["value"]
+            next_fd["value"] = fd + 1
+            fd_table[fd] = {"path": args[0], "mode": args[1]}
+            return fd
+
+        def fd_write(args, line):
+            fd = args[0]
+            text = args[1]
+            record = fd_table.get(fd, {})
+            if record.get("path") in {"/dev/stdout", "/dev/tty"}:
+                rendered.append(text)
+            return len(text)
 
         interpreter = PebbleInterpreter(
             path_resolver=resolve_repo_system_path,
@@ -916,6 +932,14 @@ class PebbleInterpreterTests(unittest.TestCase):
                 "term_read_key_timeout": lambda args, line: next(keys),
                 "term_rows": lambda args, line: 24,
                 "term_cols": lambda args, line: 80,
+                "term_state": lambda args, line: {
+                    "owner_pgid": 0,
+                    "mode": "cooked",
+                    "interactive": 0,
+                    "foreground_raw": 0,
+                    "rows": 24,
+                    "cols": 80,
+                },
                 "raw_list_files": lambda args, line: [],
                 "raw_file_exists": lambda args, line: 0,
                 "raw_create_file": lambda args, line: 0,
@@ -924,6 +948,9 @@ class PebbleInterpreterTests(unittest.TestCase):
                 "raw_file_time": lambda args, line: "2026-03-01, 15:30:00",
                 "raw_read_file": lambda args, line: "",
                 "raw_write_file": lambda args, line: args[1],
+                "fd_open": fd_open,
+                "fd_write": fd_write,
+                "fd_close": lambda args, line: 0,
                 "current_time": lambda args, line: "2026-03-01, 15:30:00",
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             },
@@ -1039,6 +1066,175 @@ class PebbleInterpreterTests(unittest.TestCase):
 
         self.assertEqual(output, ["5", "0", "hello"])
 
+    def test_runtime_can_open_and_stat_device_fds(self) -> None:
+        shell = build_shell()
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        output = PebbleInterpreter(
+            shell.fs.root,
+            path_resolver=shell._resolve_user_path_to_host,
+            host_functions=shell._make_runtime(consume_output=False).host_functions,
+        ).execute(
+            runtime_source
+            + "\n"
+            + "\n".join(
+                [
+                    'dev = sys_fd_open("/dev", "r")',
+                    "print len(sys_fd_readdir(dev))",
+                    'tty = sys_fd_open("/dev/tty", "w")',
+                    'print sys_fd_stat(tty)["kind"]',
+                    'print sys_fd_stat(tty)["path"]',
+                ]
+            ),
+            initial_globals={
+                "FS_MODE": "hostfs",
+                "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                "SYSTEM_SHELL_PATH": "system/shell.peb",
+                "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+            },
+        )
+        self.assertEqual(output, ["5", "device", "/dev/tty"])
+
+    def test_runtime_exposes_thread_bootstrap_api(self) -> None:
+        shell = build_shell()
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        output = PebbleInterpreter(
+            shell.fs.root,
+            path_resolver=shell._resolve_user_path_to_host,
+            host_functions=shell._make_runtime(consume_output=False).host_functions,
+        ).execute(
+            runtime_source
+            + "\n"
+            + "\n".join(
+                [
+                    "states = runtime_thread_states()",
+                    'print states["ready"]',
+                    'tid = thread_spawn_source("demo", "print 7", [])',
+                    "print thread_status(tid)",
+                    "record = thread_join(tid)",
+                    'print record["tid"]',
+                    'print record["state"]',
+                    'print record["outputs"][0]',
+                ]
+            ),
+            initial_globals={
+                "FS_MODE": "hostfs",
+                "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                "SYSTEM_SHELL_PATH": "system/shell.peb",
+                "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+            },
+        )
+        self.assertEqual(output, ["ready", "ready", "1", "halted", "7"])
+
+    def test_runtime_can_write_to_dev_stdout_via_fd(self) -> None:
+        shell = build_shell()
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        output = PebbleInterpreter(
+            shell.fs.root,
+            path_resolver=shell._resolve_user_path_to_host,
+            host_functions=shell._make_runtime(consume_output=False).host_functions,
+        ).execute(
+            runtime_source
+            + "\n"
+            + "\n".join(
+                [
+                    'out = sys_fd_open("/dev/stdout", "w")',
+                    'print sys_fd_write(out, "fd stdout test")',
+                ]
+            ),
+            initial_globals={
+                "FS_MODE": "hostfs",
+                "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                "SYSTEM_SHELL_PATH": "system/shell.peb",
+                "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+            },
+        )
+        self.assertIn("14", output)
+
+    def test_runtime_stdout_helper_uses_device_fd(self) -> None:
+        shell = build_shell()
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        output = PebbleInterpreter(
+            shell.fs.root,
+            path_resolver=shell._resolve_user_path_to_host,
+            host_functions=shell._make_runtime(consume_output=False).host_functions,
+        ).execute(
+            runtime_source
+            + "\n"
+            + "\n".join(
+                [
+                    'print stdout_write("xy")',
+                    'print stdout_write_line("z")',
+                ]
+            ),
+            initial_globals={
+                "FS_MODE": "hostfs",
+                "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                "SYSTEM_SHELL_PATH": "system/shell.peb",
+                "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+            },
+        )
+        self.assertEqual(output, ["2", "2"])
+
+    def test_runtime_can_write_to_dev_null(self) -> None:
+        shell = build_shell()
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        output = PebbleInterpreter(
+            shell.fs.root,
+            path_resolver=shell._resolve_user_path_to_host,
+            host_functions=shell._make_runtime(consume_output=False).host_functions,
+        ).execute(
+            runtime_source
+            + "\n"
+            + "\n".join(
+                [
+                    'sink = sys_fd_open("/dev/null", "w")',
+                    'print sys_fd_write(sink, "discard me")',
+                    'print sys_fd_stat(sink)["kind"]',
+                ]
+            ),
+            initial_globals={
+                "FS_MODE": "hostfs",
+                "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                "SYSTEM_SHELL_PATH": "system/shell.peb",
+                "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+            },
+        )
+        self.assertEqual(output, ["10", "device"])
+
+    def test_runtime_exposes_virtual_dev_paths_in_filesystem_view(self) -> None:
+        shell = build_shell()
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        output = PebbleInterpreter(
+            shell.fs.root,
+            path_resolver=shell._resolve_user_path_to_host,
+            host_functions=shell._make_runtime(consume_output=False).host_functions,
+        ).execute(
+            runtime_source
+            + "\n"
+            + "\n".join(
+                [
+                    "print directory_exists('/dev')",
+                    "print file_exists('/dev/tty')",
+                    "print file_exists('/dev/stdout')",
+                    "items = list_files()",
+                    "found = 0",
+                    "i = 0",
+                    "while i < len(items):",
+                    "    if items[i] == 'dev' or items[i] == 'dev/tty':",
+                    "        found = 1",
+                    "    i = i + 1",
+                    "print found",
+                ]
+            ),
+            initial_globals={
+                "FS_MODE": "hostfs",
+                "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                "SYSTEM_SHELL_PATH": "system/shell.peb",
+                "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+            },
+        )
+        self.assertEqual(output, ["1", "1", "1", "1"])
+
     def test_detach_emits_sigtstp_with_foreground_process_group(self) -> None:
         shell = build_shell()
         target = shell.fs.resolve_path("fg_signal_test.peb")
@@ -1070,6 +1266,26 @@ class PebbleShellSmokeTests(unittest.TestCase):
             shell.onecmd("help")
         self.assertTrue(any("preferred run   COMMAND [ARGS...]" in line for line in outputs))
         self.assertTrue(any("compatibility launcher" in line for line in outputs))
+
+    def test_shell_can_cd_into_virtual_dev_and_find_devices(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("find /dev")
+            shell.onecmd("cd /dev")
+            shell.onecmd("pwd")
+            shell.onecmd("ls")
+        self.assertIn("/dev", outputs)
+        self.assertTrue(any("/dev/tty" in line for line in outputs))
+        self.assertTrue(any("tty" == line or line.endswith("  tty") for line in outputs))
+
+    def test_tty_command_reports_device_state(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("tty")
+        self.assertIn("/dev/tty", outputs)
+        self.assertTrue(any(line.startswith("mode=") for line in outputs))
 
 
 @slow_test
@@ -1258,11 +1474,23 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         shell = build_shell()
         dir_path = shell.fs.resolve_path("fuzzy_remove_dir")
         file_path = shell.fs.resolve_path("apps/fuzzy_demo_program.peb")
+        tree_demo_file = shell.fs.resolve_path("tree_demo/a.txt")
+        tree_demo_sub_file = shell.fs.resolve_path("tree_demo/sub/b.txt")
+        tree_demo_subdir = shell.fs.resolve_path("tree_demo/sub")
+        tree_demo_dir = shell.fs.resolve_path("tree_demo")
         dir_path.mkdir(parents=True, exist_ok=True)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text('print "ok"', encoding="utf-8")
 
         try:
+            if tree_demo_file.exists():
+                tree_demo_file.unlink()
+            if tree_demo_sub_file.exists():
+                tree_demo_sub_file.unlink()
+            if tree_demo_subdir.exists():
+                tree_demo_subdir.rmdir()
+            if tree_demo_dir.exists():
+                tree_demo_dir.rmdir()
             ls_matches = shell.completedefault("remove", "ls remove", 3, 9)
             cd_matches = shell.completedefault("remove", "cd remove", 3, 9)
             run_matches = shell.completedefault("demo", "run demo", 4, 8)
@@ -2083,6 +2311,7 @@ class PebbleShellRuntimeTests(unittest.TestCase):
 
         self.assertTrue(any("file.txt" in line for line in outputs))
         self.assertFalse(any("system/" in line for line in outputs))
+        self.assertFalse(any("dir_cd_test/file.txt" in line for line in outputs))
 
     def test_ls_shows_system_files_when_inside_system_directory(self) -> None:
         shell = build_shell()
@@ -2213,6 +2442,50 @@ class PebbleShellRuntimeTests(unittest.TestCase):
                 target.unlink()
 
         self.assertTrue(any(line.endswith("  ls_time_test.txt") for line in outputs))
+
+    def test_root_ls_shows_only_direct_children(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        try:
+            shell.onecmd("touch nested_ls_dir/child.txt")
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("ls")
+        finally:
+            target = shell.fs.resolve_path("nested_ls_dir/child.txt")
+            if target.exists():
+                target.unlink()
+            parent = shell.fs.resolve_path("nested_ls_dir")
+            if parent.exists():
+                parent.rmdir()
+        self.assertTrue(any(line.endswith("  nested_ls_dir") for line in outputs))
+        self.assertFalse(any("nested_ls_dir/child.txt" in line for line in outputs))
+
+    def test_tree_lists_recursive_structure_from_current_directory(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        try:
+            shell.onecmd("touch tree_demo/a.txt")
+            shell.onecmd("touch tree_demo/sub/b.txt")
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("cd tree_demo")
+                shell.onecmd("tree")
+        finally:
+            target_a = shell.fs.resolve_path("tree_demo/a.txt")
+            target_b = shell.fs.resolve_path("tree_demo/sub/b.txt")
+            if target_a.exists():
+                target_a.unlink()
+            if target_b.exists():
+                target_b.unlink()
+            subdir = shell.fs.resolve_path("tree_demo/sub")
+            if subdir.exists():
+                subdir.rmdir()
+            rootdir = shell.fs.resolve_path("tree_demo")
+            if rootdir.exists():
+                rootdir.rmdir()
+        self.assertIn(".", outputs)
+        self.assertIn("a.txt", outputs)
+        self.assertIn("sub/", outputs)
+        self.assertIn("  b.txt", outputs)
 
     def test_vfs_import_mode_reads_user_files_from_virtual_backend(self) -> None:
         shell = build_shell(fs_mode="vfs-import")

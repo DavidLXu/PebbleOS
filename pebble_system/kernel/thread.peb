@@ -1,0 +1,22 @@
+import system.lib.base
+
+def thread_states():
+    return system.lib.base.thread_state_table()
+
+def thread_spawn_source(name, source, argv):
+    return thread_spawn_source_host(name, source, argv)
+
+def thread_join(tid):
+    return thread_join_host(tid)
+
+def thread_status(tid):
+    return thread_status_host(tid)
+
+def thread_self():
+    return thread_self_host()
+
+def thread_yield():
+    return thread_yield_host()
+
+def thread_list():
+    return list_thread_records()
