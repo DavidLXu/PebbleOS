@@ -18,6 +18,7 @@ import time as time_module
 
 from pebble_bootloader.fs import FileSystemError, FlatFileSystem
 from pebble_bootloader.lang import (
+    FunctionValue,
     PebbleBytecodeInterpreter,
     PebbleError,
     PebbleInputBlocked,
@@ -642,6 +643,7 @@ class PebbleShell(cmd.Cmd):
                 "vm_restore_task": self._host_vm_restore_task,
                 "vm_drop_task": self._host_vm_drop_task,
                 "thread_spawn_source_host": self._host_thread_spawn_source,
+                "thread_spawn_host": self._host_thread_spawn,
                 "thread_join_host": self._host_thread_join,
                 "thread_status_host": self._host_thread_status,
                 "thread_self_host": self._host_thread_self,
@@ -1511,6 +1513,74 @@ class PebbleShell(cmd.Cmd):
             "outputs": list(task.interpreter.output),
         }
 
+    def _serialize_pebble_value(self, value: object, line_number: int) -> str:
+        if value is None:
+            return "None"
+        if isinstance(value, bool):
+            return "True" if value else "False"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, str):
+            return repr(value)
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                parts.append(self._serialize_pebble_value(item, line_number))
+            return "[" + ", ".join(parts) + "]"
+        if isinstance(value, dict):
+            parts: list[str] = []
+            for key, item in value.items():
+                parts.append(
+                    self._serialize_pebble_value(key, line_number)
+                    + ": "
+                    + self._serialize_pebble_value(item, line_number)
+                )
+            return "{" + ", ".join(parts) + "}"
+        raise PebbleError(f"line {line_number}: value is not serializable for thread spawn")
+
+    def _create_vm_thread_from_callable(
+        self,
+        parent_task: VMTask,
+        function_value: FunctionValue,
+        arg_values: list[object],
+        line_number: int,
+    ) -> int:
+        serialized_args: list[str] = []
+        for value in arg_values:
+            serialized_args.append(self._serialize_pebble_value(value, line_number))
+        source = function_value.name + "(" + ", ".join(serialized_args) + ")"
+        task_ref: dict[str, VMTask | None] = {"task": None}
+        host_functions = dict(parent_task.interpreter.host_functions)
+        host_functions["thread_self_host"] = lambda inner_args, inner_line: task_ref["task"].task_id if task_ref["task"] is not None else 0
+        interpreter = PebbleBytecodeInterpreter(
+            self.fs.root,
+            input_provider=lambda prompt="": self._vm_task_input_provider(task_ref["task"], prompt),
+            output_consumer=None,
+            path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, parent_task.cwd)),
+            host_functions=host_functions,
+        )
+        interpreter.prepare(source, initial_globals=parent_task.interpreter.globals)
+        interpreter.functions = {function_value.name: function_value.function}
+        interpreter.module_cache = dict(parent_task.interpreter.module_cache)
+        interpreter.module_loading = set(parent_task.interpreter.module_loading)
+        task_id = self._next_job_id
+        self._next_job_id = self._next_job_id + 1
+        task = VMTask(
+            task_id=task_id,
+            command="thread " + function_value.name,
+            program=function_value.name,
+            argv=[],
+            cwd=parent_task.cwd,
+            interpreter=interpreter,
+            ppid=parent_task.ppid,
+            pgid=parent_task.pgid,
+            sid=parent_task.sid,
+        )
+        task_ref["task"] = task
+        with self._vm_lock:
+            self._vm_tasks[task_id] = task
+        return task_id
+
     def _host_mutex_create(self, args: list[object], line_number: int) -> int:
         if args:
             raise PebbleError(f"line {line_number}: mutex_create_host() expected 0 arguments but got {len(args)}")
@@ -1626,6 +1696,14 @@ class PebbleShell(cmd.Cmd):
         if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
             raise PebbleError(f"line {line_number}: thread_spawn_source_host() expects argv as list[str]")
         return self._host_vm_create_task([args[1], argv], line_number)
+
+    def _host_thread_spawn(self, args: list[object], line_number: int) -> int:
+        if len(args) != 2 or not isinstance(args[0], FunctionValue) or not isinstance(args[1], list):
+            raise PebbleError(f"line {line_number}: thread_spawn_host() expects function value and args list")
+        task = getattr(self._vm_execution_context, "task", None)
+        if task is None:
+            raise PebbleError(f"line {line_number}: thread_spawn() is only available inside VM tasks")
+        return self._create_vm_thread_from_callable(task, args[0], args[1], line_number)
 
     def _host_thread_join(self, args: list[object], line_number: int) -> dict[str, object]:
         if len(args) != 1 or not isinstance(args[0], int):

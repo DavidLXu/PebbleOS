@@ -194,6 +194,33 @@ class PebbleInterpreterTests(unittest.TestCase):
         )
         self.assertEqual(interpreter.run_until_complete(), ["line 2: disk full"])
 
+    def test_interpreter_supports_function_values(self) -> None:
+        output = PebbleInterpreter().execute(
+            "\n".join(
+                [
+                    "def add_one(x):",
+                    "    return x + 1",
+                    "fn = add_one",
+                    "print fn(4)",
+                ]
+            )
+        )
+        self.assertEqual(output, ["5"])
+
+    def test_bytecode_supports_function_values(self) -> None:
+        interpreter = PebbleBytecodeInterpreter()
+        interpreter.prepare(
+            "\n".join(
+                [
+                    "def add_one(x):",
+                    "    return x + 1",
+                    "fn = add_one",
+                    "print fn(4)",
+                ]
+            )
+        )
+        self.assertEqual(interpreter.run_until_complete(), ["5"])
+
     def test_supports_functions_for_loops_if_blocks_and_returns(self) -> None:
         source = "\n".join(
             [
@@ -1273,6 +1300,23 @@ class PebbleInterpreterTests(unittest.TestCase):
         record = shell._host_thread_join([tid], 1)
         self.assertEqual(record["state"], "halted")
         self.assertEqual(record["outputs"], ["9"])
+
+    def test_runtime_thread_spawn_supports_function_values(self) -> None:
+        shell = build_shell()
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        source = runtime_source + "\n" + "\n".join(
+            [
+                "def worker(n):",
+                "    print n + 1",
+                "tid = thread_spawn(worker, [5])",
+                "record = thread_join(tid)",
+                'print record["outputs"][0]',
+            ]
+        )
+        task_id = shell._host_vm_create_task([source, []], 1)
+        record = shell._host_thread_join([task_id], 1)
+        self.assertEqual(record["state"], "halted")
+        self.assertEqual(record["outputs"], ["6"])
 
     def test_ps_dash_t_lists_threads(self) -> None:
         shell = build_shell()

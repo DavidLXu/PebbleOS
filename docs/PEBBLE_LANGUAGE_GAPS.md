@@ -58,8 +58,18 @@ bootstraping but not acceptable as the long-term API for a Linux-like system.
 Needed next:
 
 - `thread_spawn(func, args)`
-- callable values
 - eventually closures or a constrained equivalent
+
+Current status:
+
+- user-defined functions are now first-class values in a bootstrap form
+- `thread_spawn(func, args)` is now possible on top of those function values
+
+Still missing:
+
+- closures
+- lambdas
+- builtin/module callable values with the same model
 
 ### Priority 3: Better structured data
 

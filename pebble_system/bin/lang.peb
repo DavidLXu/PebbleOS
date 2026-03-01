@@ -36,6 +36,7 @@ else:
     print "  import heap"
     print "Operators: +  -  *  /  <  >  ==  !=  <=  >=  and parentheses for grouping"
     print "Values: integers, floats, strings, lists, dicts, variables, indexing, and function calls"
+    print "Functions: user-defined functions can be assigned to variables and called indirectly"
     print "Builtins: len, append, range, read_file, write_file, str, int, float, input, argv, keys"
     print "Modules: math, os, text, random, memory, heap"
     print "Errors: minimal try/except, except err, and raise are supported without exception classes or finally"

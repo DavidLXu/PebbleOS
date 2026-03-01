@@ -50,6 +50,7 @@ Pebble expressions support:
 - list literals
 - dict literals
 - variables
+- function values
 - function calls
 - module-qualified calls like `math.sin(...)`
 - indexing
@@ -103,6 +104,9 @@ Pebble programs also receive:
 - `ARGV` as a list of argument strings
 - `argv(i)` as a convenience builtin for fetching one argument
 
+User-defined functions can also be treated as first-class values in a bootstrap
+form: they can be assigned to variables, passed around, and called indirectly.
+
 ## Modules
 
 Pebble supports both built-in modules and file-based user modules.
@@ -148,6 +152,12 @@ print math.abs(-7)
 write_file("hello.txt", name)
 print read_file("hello.txt")
 
+def add_one(x):
+    return x + 1
+
+fn = add_one
+print fn(4)
+
 try:
     print missing_name
 except:
@@ -169,6 +179,8 @@ except err:
 - The shell command `lang` prints an in-system summary of current syntax
 - `try/except` currently supports `except:` and `except err:` but still has no `finally`
 - `raise expression` currently raises a plain Pebble runtime error using the stringified value
+- first-class functions currently cover user-defined functions and are intended
+  to support bootstrap APIs like `thread_spawn(func, args)`
 - Trigonometric functions use degree input
 - `sin`, `cos`, and `tan` currently return fixed-point integers scaled by `10000`
 - More detailed memory behavior for `memory` and `heap` is documented in [MEMORY.md](/Users/xulixin/LX_OS/MEMORY.md)

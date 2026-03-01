@@ -207,6 +207,7 @@ That preparation phase added:
 - Pebble language priorities are now tracked against Python 3.x in `docs/PEBBLE_LANGUAGE_GAPS.md`, and the first OS-driven upgrade is in place: minimal `try: ... except:` error recovery in both interpreter and bytecode execution
 - Pebble error handling has advanced another step toward Python-style system code: `raise expression` now works in both interpreter and bytecode modes, still with a deliberately minimal runtime-error model
 - Pebble error recovery now also supports `except err:` bindings, with the bound value exposed as a stringified runtime error so system code can log or branch on failures without a full exception-class hierarchy yet
+- Pebble now has bootstrap first-class function values for user-defined functions, and the thread API has started using them via `thread_spawn(func, args)` instead of only `thread_spawn_source(...)`
 
 This is the current transition point: PebbleOS is no longer just a bootstrap
 demo, but it is not yet a full modern system either. It now has enough

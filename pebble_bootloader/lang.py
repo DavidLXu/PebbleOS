@@ -165,6 +165,7 @@ class ModuleObject:
 @dataclass
 class FunctionValue:
     name: str
+    function: object
 
 
 Value = int | float | bool | None | str | ModuleObject | FunctionValue | list["Value"] | dict["Value", "Value"]
@@ -927,8 +928,10 @@ class PebbleInterpreter:
         self.output_consumer = output_consumer
         self.path_resolver = path_resolver
         self.host_functions = host_functions or {}
+        self.source_text = ""
 
     def execute(self, source: str, initial_globals: dict[str, Value] | None = None) -> list[str]:
+        self.source_text = source
         statements = Parser(source).parse()
         self.output: list[str] = []
         self.globals: dict[str, Value] = {
@@ -1200,7 +1203,7 @@ class PebbleInterpreter:
         except PebbleError:
             target = None
         if isinstance(target, FunctionValue):
-            return self._call_function_by_name(target.name, args, line_number, local_env)
+            return self._call_function_object(target.name, target.function, args, line_number, local_env)
         if name in self.functions:
             return self._call_function_by_name(name, args, line_number, local_env)
         return self._call_builtin_args(name, args, line_number)
@@ -1324,6 +1327,16 @@ class PebbleInterpreter:
         function = self.functions.get(name)
         if function is None:
             raise PebbleError(f"line {line_number}: unknown function '{name}'")
+        return self._call_function_object(name, function, args, line_number, local_env)
+
+    def _call_function_object(
+        self,
+        name: str,
+        function: object,
+        args: list[Value],
+        line_number: int,
+        local_env: dict[str, Value] | None,
+    ) -> Value:
         if len(args) != len(function.params):
             raise PebbleError(
                 f"line {line_number}: function '{name}' expected "
@@ -1551,7 +1564,7 @@ class PebbleInterpreter:
         if name in self.globals:
             return self.globals[name]
         if name in self.functions:
-            return FunctionValue(name)
+            return FunctionValue(name, self.functions[name])
         raise PebbleError(f"line {line_number}: unknown variable '{name}'")
 
     def _bind_imported_module(
@@ -1672,6 +1685,7 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
         return self.output
 
     def prepare(self, source: str, initial_globals: dict[str, Value] | None = None) -> None:
+        self.source_text = source
         statements = Parser(source).parse()
         code = BytecodeCompiler().compile(statements)
         self.output = []
@@ -2307,6 +2321,16 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
         function = self.functions.get(name)
         if function is None:
             raise PebbleError(f"line {line_number}: unknown function '{name}'")
+        return self._call_function_object(name, function, args, line_number, local_env)
+
+    def _call_function_object(
+        self,
+        name: str,
+        function: object,
+        args: list[Value],
+        line_number: int,
+        local_env: dict[str, Value] | None,
+    ) -> Value:
         if len(args) != len(function.params):
             raise PebbleError(
                 f"line {line_number}: function '{name}' expected "

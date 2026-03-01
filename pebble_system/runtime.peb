@@ -1191,6 +1191,9 @@ def sys_fd_readdir(fd):
 def thread_spawn_source(name, source, argv):
     return system.kernel.thread.thread_spawn_source(name, source, argv)
 
+def thread_spawn(func, args):
+    return system.kernel.thread.thread_spawn(func, args)
+
 def thread_join(tid):
     return system.kernel.thread.thread_join(tid)
 

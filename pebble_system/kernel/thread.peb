@@ -6,6 +6,9 @@ def thread_states():
 def thread_spawn_source(name, source, argv):
     return thread_spawn_source_host(name, source, argv)
 
+def thread_spawn(func, args):
+    return thread_spawn_host(func, args)
+
 def thread_join(tid):
     return thread_join_host(tid)
 

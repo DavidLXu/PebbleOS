@@ -23,6 +23,7 @@ What it provides now:
 - a Pebble kernel thread module
 - a Pebble kernel mutex module
 - runtime wrappers for thread spawn/join/self/yield/list
+- a bootstrap `thread_spawn(func, args)` API using first-class function values
 - runtime wrappers for mutex create/lock/try-lock/unlock/list
 - host-backed thread records built on VM tasks
 
@@ -78,12 +79,22 @@ rewriting the interface again.
 
 ### Bootstrap spawn API
 
-Current bootstrap creation uses source text because Pebble does not yet have a
-stable first-class callable/thread ABI:
+Current bootstrap creation started with source text:
 
 - `thread_spawn_source(name, source, argv) -> tid`
 
 This creates a new VM-backed thread record in the current process.
+
+Pebble now also supports a more natural bootstrap form:
+
+- `thread_spawn(func, args) -> tid`
+
+Current limitations:
+
+- `func` must be a Pebble function value
+- `args` must be serializable Pebble values
+- the child thread currently starts from the selected function and a copied
+  bootstrap environment, not a final Linux-like shared-heap thread view yet
 
 ### Lifecycle API
 
