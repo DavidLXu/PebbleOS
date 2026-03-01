@@ -11,6 +11,18 @@ class PebbleError(Exception):
     """Raised when Pebble source is invalid or fails at runtime."""
 
 
+class PebbleInputBlocked(Exception):
+    def __init__(self, prompt: str) -> None:
+        super().__init__(prompt)
+        self.prompt = prompt
+
+
+class PebbleTTYBlocked(Exception):
+    def __init__(self, timeout_seconds: float | None) -> None:
+        super().__init__("tty")
+        self.timeout_seconds = timeout_seconds
+
+
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MODULE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 DEF_RE = re.compile(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)\((.*)\):$")
@@ -1606,7 +1618,11 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
                     continue
                 instr = frame.code[frame.pc]
                 frame.pc = frame.pc + 1
-                self._execute_step_instr(instr, frame.locals)
+                try:
+                    self._execute_step_instr(instr, frame.locals)
+                except (PebbleInputBlocked, PebbleTTYBlocked):
+                    frame.pc = frame.pc - 1
+                    raise
             self._consume_pending_signal()
             if not self.vm_state.code_stack:
                 self.vm_state.halted = True

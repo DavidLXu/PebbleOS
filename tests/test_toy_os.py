@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import termios
 import threading
 import time
 import unittest
 import types
+import itertools
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +18,8 @@ from pebble_bootloader.shell import build_shell
 
 REPO_ROOT = Path("/Users/xulixin/LX_OS")
 SYSTEM_ROOT = REPO_ROOT / "pebble_system"
+RUN_SLOW_TESTS = os.environ.get("PEBBLE_RUN_SLOW_TESTS") == "1"
+slow_test = unittest.skipUnless(RUN_SLOW_TESTS, "set PEBBLE_RUN_SLOW_TESTS=1 to run slow shell integration tests")
 
 
 def resolve_repo_system_path(name: str) -> Path:
@@ -945,6 +949,59 @@ class PebbleInterpreterTests(unittest.TestCase):
         )
         self.assertEqual(output, ["LEFT"])
 
+    def test_runtime_exposes_tty_state_wrappers(self) -> None:
+        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        interpreter = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
+            host_functions={
+                "term_owner_pgid": lambda args, line: 42,
+                "term_mode": lambda args, line: "raw",
+                "term_state": lambda args, line: {
+                    "owner_pgid": 42,
+                    "mode": "raw",
+                    "interactive": 1,
+                    "foreground_raw": 1,
+                    "rows": 30,
+                    "cols": 100,
+                },
+            },
+        )
+        output = interpreter.execute(
+            runtime_source + '\nprint tty_owner_pgid()\nprint tty_mode()\nprint tty_state()["rows"]\n',
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["42", "raw", "30"])
+
+    def test_kernel_term_snapshot_exposes_tty_abi(self) -> None:
+        interpreter = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
+            host_functions={
+                "term_owner_pgid": lambda args, line: 7,
+                "term_mode": lambda args, line: "cooked",
+                "term_state": lambda args, line: {
+                    "owner_pgid": 7,
+                    "mode": "cooked",
+                    "interactive": 1,
+                    "foreground_raw": 0,
+                    "rows": 24,
+                    "cols": 80,
+                },
+            },
+        )
+        output = interpreter.execute(
+            "\n".join(
+                [
+                    "import system.kernel.term",
+                    "snapshot = system.kernel.term.tty_snapshot()",
+                    'print snapshot["mode"]',
+                    'print snapshot["owner_pgid"]',
+                    'print len(snapshot["syscalls"])',
+                    'print snapshot["capabilities"]["modes"][0]',
+                ]
+            )
+        )
+        self.assertEqual(output, ["cooked", "7", "13", "cooked"])
+
     def test_runtime_exposes_minimal_fd_wrappers(self) -> None:
         shell = build_shell()
         runtime_source = shell.fs.read_file("system/runtime.peb")
@@ -1005,6 +1062,17 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(events[0]["pgid"], 1)
 
 
+class PebbleShellSmokeTests(unittest.TestCase):
+    def test_shell_help_smoke(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("help")
+        self.assertTrue(any("preferred run   COMMAND [ARGS...]" in line for line in outputs))
+        self.assertTrue(any("compatibility launcher" in line for line in outputs))
+
+
+@slow_test
 class PebbleShellRuntimeTests(unittest.TestCase):
     def test_run_program_is_interrupted_by_control_c(self) -> None:
         shell = build_shell()
@@ -1325,23 +1393,36 @@ class PebbleShellRuntimeTests(unittest.TestCase):
 
     def test_foreground_vm_task_owns_terminal_while_attached(self) -> None:
         shell = build_shell()
-        task_id = shell._create_vm_task("system/clock_tick.peb", [], "run")
+        target = shell.fs.resolve_path("fg_tty_owner.peb")
+        target.write_text('print "TTY OWNER"\nprint read_key()\n', encoding="utf-8")
+        task_id = shell._create_vm_task("/fg_tty_owner.peb", [], "run")
         outputs: list[str] = []
-        keys = iter(["q"])
+        pending_chars = ["q"]
 
         try:
-            with patch.object(shell, "_poll_foreground_job_action", return_value=None):
-                with patch.object(shell, "_read_terminal_key", side_effect=lambda line, timeout: next(keys, "")):
+            with patch("sys.stdin.isatty", return_value=True), patch("sys.stdin.fileno", return_value=0):
+                with patch("sys.stdin.read", side_effect=lambda size=1: pending_chars.pop(0)):
                     with patch(
-                        "builtins.print",
-                        side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                        "select.select",
+                        side_effect=lambda *args, **kwargs: (([object()], [], []) if pending_chars else ([], [], [])),
                     ):
-                        shell._attach_foreground_vm_task(task_id)
+                        with patch("termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0]), patch(
+                            "termios.tcsetattr", return_value=None
+                        ), patch("tty.setraw", return_value=None):
+                            with patch.object(shell, "_poll_foreground_job_action", return_value=None):
+                                with patch(
+                                    "builtins.print",
+                                    side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                                ):
+                                    shell._attach_foreground_vm_task(task_id)
         finally:
             with shell._vm_lock:
                 shell._vm_tasks.pop(task_id, None)
+            if target.exists():
+                target.unlink()
 
-        self.assertTrue(any("CLOCK TICK" in line for line in outputs))
+        self.assertIn("TTY OWNER", outputs)
+        self.assertIn("q", outputs)
 
     def test_background_jobs_reject_interactive_programs(self) -> None:
         shell = build_shell()
@@ -1753,6 +1834,160 @@ class PebbleShellRuntimeTests(unittest.TestCase):
 
         self.assertIn("repl ok", outputs)
         self.assertTrue(any(prompt.startswith("bash:") for prompt in prompts))
+
+    def test_foreground_vm_task_can_block_on_input_and_resume(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("vm_input_resume.peb")
+        target.write_text('value = input("name: ")\nprint value\n', encoding="utf-8")
+        outputs: list[str] = []
+        prompts: list[str] = []
+        replies = iter(["pebble"])
+
+        def fake_input(prompt: str = "") -> str:
+            prompts.append(prompt)
+            return next(replies)
+
+        try:
+            with patch("builtins.input", side_effect=fake_input):
+                with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                    shell.onecmd("run vm_input_resume.peb")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertIn("pebble", outputs)
+        self.assertIn("name: ", prompts)
+
+    def test_foreground_vm_task_can_block_on_tty_and_resume(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("vm_key_resume.peb")
+        target.write_text('print read_key()\n', encoding="utf-8")
+        outputs: list[str] = []
+        pending_chars = ["a"]
+
+        try:
+            with patch("sys.stdin.isatty", return_value=True), patch("sys.stdin.fileno", return_value=0):
+                with patch("sys.stdin.read", side_effect=lambda size=1: pending_chars.pop(0)):
+                    with patch(
+                        "select.select",
+                        side_effect=lambda *args, **kwargs: (([object()], [], []) if pending_chars else ([], [], [])),
+                    ):
+                        with patch("termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0]), patch(
+                            "termios.tcsetattr", return_value=None
+                        ), patch("tty.setraw", return_value=None):
+                            with patch.object(shell, "_poll_foreground_job_action", return_value=None):
+                                with patch(
+                                    "builtins.print",
+                                    side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                                ):
+                                    shell.onecmd("run vm_key_resume.peb")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertIn("a", outputs)
+
+    def test_foreground_vm_task_queues_multiple_tty_keys(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("vm_key_queue.peb")
+        target.write_text('print read_key()\nprint read_key()\nprint read_key()\n', encoding="utf-8")
+        outputs: list[str] = []
+        pending_chars = ["a", "b", "c"]
+
+        try:
+            with patch("sys.stdin.isatty", return_value=True), patch("sys.stdin.fileno", return_value=0):
+                with patch("sys.stdin.read", side_effect=lambda size=1: pending_chars.pop(0)):
+                    with patch(
+                        "select.select",
+                        side_effect=lambda *args, **kwargs: (([object()], [], []) if pending_chars else ([], [], [])),
+                    ):
+                        with patch("termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0]), patch(
+                            "termios.tcsetattr", return_value=None
+                        ), patch("tty.setraw", return_value=None):
+                            with patch.object(shell, "_poll_foreground_job_action", return_value=None):
+                                with patch(
+                                    "builtins.print",
+                                    side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                                ):
+                                    shell.onecmd("run vm_key_queue.peb")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertEqual(outputs[:3], ["a", "b", "c"])
+
+    def test_foreground_vm_task_decodes_arrow_keys_without_exit(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("vm_arrow_key.peb")
+        target.write_text('print read_key()\n', encoding="utf-8")
+        outputs: list[str] = []
+        pending_chars = ["\x1b", "[", "D"]
+
+        try:
+            with patch("sys.stdin.isatty", return_value=True), patch("sys.stdin.fileno", return_value=0):
+                with patch("sys.stdin.read", side_effect=lambda size=1: pending_chars.pop(0)):
+                    with patch(
+                        "select.select",
+                        side_effect=lambda *args, **kwargs: (([object()], [], []) if pending_chars else ([], [], [])),
+                    ):
+                        with patch("termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0]), patch(
+                            "termios.tcsetattr", return_value=None
+                        ), patch("tty.setraw", return_value=None):
+                            with patch.object(shell, "_poll_foreground_job_action", return_value=None):
+                                with patch(
+                                    "builtins.print",
+                                    side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                                ):
+                                    shell.onecmd("run vm_arrow_key.peb")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertIn("LEFT", outputs)
+
+    def test_foreground_vm_task_decodes_delayed_arrow_sequence(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("vm_delayed_arrow_key.peb")
+        target.write_text('print read_key()\n', encoding="utf-8")
+        outputs: list[str] = []
+        bytes_seen = iter(["\x1b", "", "[", "C", ""])
+
+        try:
+            with patch("sys.stdin.isatty", return_value=True):
+                with patch.object(shell, "_read_terminal_byte", side_effect=lambda timeout=None: next(bytes_seen)):
+                    with patch.object(shell, "_poll_foreground_job_action", return_value=None):
+                        with patch(
+                            "builtins.print",
+                            side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                        ):
+                            shell.onecmd("run vm_delayed_arrow_key.peb")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertIn("RIGHT", outputs)
+
+    def test_foreground_vm_task_treats_bare_escape_as_key_not_interrupt(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("vm_escape_key.peb")
+        target.write_text('print read_key()\n', encoding="utf-8")
+        outputs: list[str] = []
+        bytes_seen = itertools.chain(["\x1b", "", ""], itertools.repeat(""))
+
+        try:
+            with patch("sys.stdin.isatty", return_value=True):
+                with patch.object(shell, "_read_terminal_byte", side_effect=lambda timeout=None: next(bytes_seen)):
+                    with patch.object(shell, "_poll_foreground_job_action", return_value=None):
+                        with patch(
+                            "builtins.print",
+                            side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                        ):
+                            shell.onecmd("run vm_escape_key.peb")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertIn("ESC", outputs)
 
     def test_shell_boot_creates_etc_placeholders_and_loads_profile(self) -> None:
         shell = build_shell()

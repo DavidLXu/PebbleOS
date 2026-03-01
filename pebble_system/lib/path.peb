@@ -81,8 +81,46 @@ def normalize_command_path(command):
     if command == "":
         return ""
     if command[0] == "/":
-        return map_search_dir(command)
+        return normalize_explicit_command_path(command)
     return command
+
+def normalize_explicit_command_path(command):
+    normalized = strip_leading_slash(command)
+    if starts_with(normalized, "bin/"):
+        normalized = "system/bin/" + right_part(normalized, 4)
+    elif starts_with(normalized, "system/bin/") == 0 and starts_with(normalized, "system/sbin/") == 0:
+        normalized = normalized
+    if ends_with(normalized, ".peb") == 0:
+        normalized = normalized + ".peb"
+    return normalized
+
+def strip_leading_slash(text):
+    if text == "":
+        return ""
+    if text[0] != "/":
+        return text
+    return right_part(text, 1)
+
+def starts_with(text, prefix):
+    if len(text) < len(prefix):
+        return 0
+    i = 0
+    while i < len(prefix):
+        if text[i] != prefix[i]:
+            return 0
+        i = i + 1
+    return 1
+
+def ends_with(text, suffix):
+    if len(text) < len(suffix):
+        return 0
+    i = 0
+    start = len(text) - len(suffix)
+    while i < len(suffix):
+        if text[start + i] != suffix[i]:
+            return 0
+        i = i + 1
+    return 1
 
 def find_command_path(command, path_value):
     if has_slash(command):

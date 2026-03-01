@@ -26,6 +26,9 @@ def process_list():
 def process_foreground(job_id):
     return foreground_job(job_id)
 
+def process_background(job_id):
+    return background_job(job_id)
+
 def process_wait(pid):
     return wait_process(pid)
 

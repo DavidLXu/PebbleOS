@@ -23,6 +23,9 @@ SIG_TERM = 15
 SIG_CHLD = 17
 SIG_TSTP = 20
 
+TTY_MODE_COOKED = "cooked"
+TTY_MODE_RAW = "raw"
+
 DEFAULT_PATH = ["/system/bin", "/bin"]
 DEFAULT_ENV = {"PATH": "/system/bin:/bin", "HOME": "/", "USER": "root", "SHELL": "/system/bin/sh.peb"}
 

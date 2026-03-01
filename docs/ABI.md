@@ -91,6 +91,7 @@ Milestone 1 introduces these Pebble entry points:
 - [`/Users/xulixin/LX_OS/pebble_system/lib/base.peb`](/Users/xulixin/LX_OS/pebble_system/lib/base.peb)
 - [`/Users/xulixin/LX_OS/pebble_system/kernel/syscall.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/syscall.peb)
 - [`/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb)
+- [`/Users/xulixin/LX_OS/pebble_system/kernel/term.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/term.peb)
 
 These modules currently provide:
 
@@ -99,6 +100,7 @@ These modules currently provide:
 - default process context shape
 - syscall-family inventory
 - transition wrappers for process-oriented shell commands
+- transition wrappers for terminal and TTY control
 
 ## Target Syscall Families
 
@@ -115,6 +117,41 @@ These modules currently provide:
 For now, Pebble kernel modules still delegate to the existing host functions.
 This is intentional. The boundary has been named and documented before deeper
 refactors such as a unified process table or fd layer.
+
+## Terminal And TTY ABI
+
+Pebble terminal programs should prefer
+[`/Users/xulixin/LX_OS/pebble_system/kernel/term.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/term.peb)
+instead of calling host-exposed `term_*` names directly.
+
+Current terminal syscalls:
+
+- `term.write`
+- `term.flush`
+- `term.clear`
+- `term.move`
+- `term.hide_cursor`
+- `term.show_cursor`
+- `term.read_key`
+- `term.read_key_timeout`
+- `term.rows`
+- `term.cols`
+- `term.owner_pgid`
+- `term.mode`
+- `term.state`
+
+Current TTY state fields:
+
+- `owner_pgid`
+- `mode`
+- `interactive`
+- `foreground_raw`
+- `rows`
+- `cols`
+
+This keeps interactive programs such as `nano`, `bash`, and `top` on a
+Pebble-visible ABI even though raw terminal access is still bridged by the
+Python host substrate.
 
 ## Error Model
 

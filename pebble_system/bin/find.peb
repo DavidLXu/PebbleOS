@@ -1,5 +1,7 @@
 import system.lib.cli
 
+TYPE_FILTER = ""
+
 def starts_with_path(name, prefix):
     if name == prefix:
         return 1
@@ -11,6 +13,14 @@ def starts_with_path(name, prefix):
             return 0
         i = i + 1
     return name[len(prefix)] == "/"
+
+def tail_from(text, start):
+    out = ""
+    i = start
+    while i < len(text):
+        out = out + text[i]
+        i = i + 1
+    return out
 
 def matches_name(name, pattern):
     if pattern == "":
@@ -24,21 +34,15 @@ def matches_name(name, pattern):
             return system.lib.cli.contains_text(base, pattern)
     return system.lib.cli.contains_text(base, pattern)
 
-def tail_from(text, start):
-    out = ""
-    i = start
-    while i < len(text):
-        out = out + text[i]
-        i = i + 1
-    return out
-
-if ARGC > 3:
-    print "find accepts START and optional -name PATTERN"
+if ARGC > 5:
+    print "find accepts START and optional -name PATTERN and -type f"
 else:
     prefix = ""
     name_pattern = ""
-    if ARGC >= 1:
+    arg_index = 0
+    if ARGC >= 1 and argv(0) != "-name" and argv(0) != "-type":
         prefix = argv(0)
+        arg_index = 1
         if prefix == "/":
             prefix = ""
         elif prefix[0] == "/":
@@ -48,12 +52,27 @@ else:
                 out = out + prefix[i]
                 i = i + 1
             prefix = out
-    if ARGC == 3:
-        if argv(1) != "-name":
-            print "find only supports -name as an extra filter"
-            prefix = "__invalid__"
+    while arg_index < ARGC:
+        if argv(arg_index) == "-name":
+            if arg_index + 1 >= ARGC:
+                print "find missing pattern for -name"
+                prefix = "__invalid__"
+                arg_index = ARGC
+            else:
+                name_pattern = argv(arg_index + 1)
+                arg_index = arg_index + 2
+        elif argv(arg_index) == "-type":
+            if arg_index + 1 >= ARGC:
+                print "find missing type for -type"
+                prefix = "__invalid__"
+                arg_index = ARGC
+            else:
+                TYPE_FILTER = argv(arg_index + 1)
+                arg_index = arg_index + 2
         else:
-            name_pattern = argv(2)
+            print "find only supports -name and -type"
+            prefix = "__invalid__"
+            arg_index = ARGC
     names = list_files()
     i = 0
     while i < len(names):
@@ -62,6 +81,10 @@ else:
             if prefix == "" or starts_with_path(names[i], prefix) or names[i] == prefix:
                 prefix_ok = 1
             if prefix_ok:
-                if name_pattern == "" or matches_name(names[i], name_pattern):
-                    print "/" + names[i]
+                type_ok = 1
+                if TYPE_FILTER != "" and TYPE_FILTER != "f":
+                    type_ok = 0
+                if type_ok:
+                    if name_pattern == "" or matches_name(names[i], name_pattern):
+                        print "/" + names[i]
         i = i + 1

@@ -1,27 +1,72 @@
 import system.lib.cli
 
-def grep_text(text, pattern, label):
+def lower_char(ch):
+    table_in = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    table_out = "abcdefghijklmnopqrstuvwxyz"
+    i = 0
+    while i < len(table_in):
+        if ch == table_in[i]:
+            return table_out[i]
+        i = i + 1
+    return ch
+
+def lower_text(text):
+    out = ""
+    i = 0
+    while i < len(text):
+        out = out + lower_char(text[i])
+        i = i + 1
+    return out
+
+def emit_match(text, number, show_line_numbers):
+    if show_line_numbers:
+        print str(number) + ":" + text
+    else:
+        print text
+
+def grep_text(text, pattern, label, ignore_case, show_line_numbers):
     lines = system.lib.cli.split_lines(text)
     i = 0
     while i < len(lines):
-        if system.lib.cli.contains_text(lines[i], pattern):
-            if label == "":
-                print lines[i]
-            else:
-                print label + ":" + lines[i]
+        hay = lines[i]
+        needle = pattern
+        if ignore_case:
+            hay = lower_text(lines[i])
+            needle = lower_text(pattern)
+        if system.lib.cli.contains_text(hay, needle):
+            payload = lines[i]
+            if label != "":
+                payload = label + ":" + payload
+            emit_match(payload, i + 1, show_line_numbers)
         i = i + 1
 
-if ARGC == 0:
+ignore_case = 0
+show_line_numbers = 0
+pattern = ""
+files = []
+i = 0
+while i < ARGC:
+    token = argv(i)
+    if pattern == "" and token == "-i":
+        ignore_case = 1
+    elif pattern == "" and token == "-n":
+        show_line_numbers = 1
+    elif pattern == "":
+        pattern = token
+    else:
+        append(files, token)
+    i = i + 1
+
+if pattern == "":
     print "grep requires a pattern"
-elif ARGC == 1:
-    grep_text(system.lib.cli.stdin_text(), argv(0), "")
+elif len(files) == 0:
+    grep_text(system.lib.cli.stdin_text(), pattern, "", ignore_case, show_line_numbers)
 else:
-    pattern = argv(0)
-    i = 1
-    while i < ARGC:
-        name = argv(i)
+    i = 0
+    while i < len(files):
+        name = files[i]
         if not file_exists(name):
             print "file '" + name + "' does not exist"
         else:
-            grep_text(read_file(name), pattern, name)
+            grep_text(read_file(name), pattern, name, ignore_case, show_line_numbers)
         i = i + 1

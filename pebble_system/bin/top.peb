@@ -1,0 +1,40 @@
+import system.kernel.proc
+import system.lib.path
+
+def print_process(record):
+    exit_text = "-"
+    if record["exit_status"] != -1:
+        exit_text = str(record["exit_status"])
+    print str(record["pid"]) + " " + record["kind"] + " " + record["state"] + " pgid=" + str(record["pgid"]) + " exit=" + exit_text + " " + record["program"]
+
+def render_snapshot():
+    snapshot = system.kernel.proc.process_table_snapshot()
+    print "Pebble top  " + current_time()
+    print "PATH=" + system.lib.path.env_value(snapshot["self"]["env"], "PATH", "")
+    print "FG_PGID=" + str(snapshot["foreground_pgid"])
+    print "PID KIND STATE PGID EXIT PROGRAM"
+    records = snapshot["processes"]
+    i = 0
+    while i < len(records):
+        print_process(records[i])
+        i = i + 1
+
+once = 0
+i = 0
+while i < ARGC:
+    if argv(i) == "--once":
+        once = 1
+    i = i + 1
+
+if once:
+    render_snapshot()
+else:
+    running = 1
+    while running:
+        clear_screen()
+        render_snapshot()
+        print ""
+        print "press q to quit"
+        key = read_key_timeout(1000)
+        if key == "q" or key == "Q":
+            running = 0

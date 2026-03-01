@@ -1,0 +1,50 @@
+import system.kernel.syscall
+import system.lib.base
+
+def write_text(text):
+    return term_write(text)
+
+def flush_output():
+    return term_flush()
+
+def clear_screen():
+    return term_clear()
+
+def move_cursor(row, col):
+    return term_move(row, col)
+
+def hide_cursor():
+    return term_hide_cursor()
+
+def show_cursor():
+    return term_show_cursor()
+
+def read_key():
+    return term_read_key()
+
+def read_key_timeout(timeout_ms):
+    return term_read_key_timeout(timeout_ms)
+
+def rows():
+    return term_rows()
+
+def cols():
+    return term_cols()
+
+def tty_owner_pgid():
+    return term_owner_pgid()
+
+def tty_mode():
+    return term_mode()
+
+def tty_state():
+    return term_state()
+
+def tty_capabilities():
+    return {"modes": [system.lib.base.TTY_MODE_COOKED, system.lib.base.TTY_MODE_RAW], "state_fields": ["owner_pgid", "mode", "interactive", "foreground_raw", "rows", "cols"]}
+
+def tty_snapshot():
+    state = tty_state()
+    state["capabilities"] = tty_capabilities()
+    state["syscalls"] = ["term.write", "term.flush", "term.clear", "term.move", "term.hide_cursor", "term.show_cursor", "term.read_key", "term.read_key_timeout", "term.rows", "term.cols", "term.owner_pgid", "term.mode", "term.state"]
+    return state

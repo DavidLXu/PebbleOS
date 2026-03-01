@@ -16,6 +16,7 @@ Detailed architecture notes:
 - process model: [docs/PROCESS.md](/Users/xulixin/LX_OS/docs/PROCESS.md)
 - launcher semantics: [docs/LAUNCHER.md](/Users/xulixin/LX_OS/docs/LAUNCHER.md)
 - shell/login semantics: [docs/SHELL_LOGIN.md](/Users/xulixin/LX_OS/docs/SHELL_LOGIN.md)
+- tty/input semantics: [docs/TTY_INPUT.md](/Users/xulixin/LX_OS/docs/TTY_INPUT.md)
 
 ## Pebble language
 
@@ -141,6 +142,13 @@ When creating or editing a file, finish input with a single `.` on its own line.
 python3 -m unittest discover -s tests
 ```
 
+Default discovery now runs the fast suite and skips the slower shell/TTY
+integration coverage. To include the full shell runtime regression set, run:
+
+```bash
+PEBBLE_RUN_SLOW_TESTS=1 python3 -m unittest discover -s tests
+```
+
 ## Project history
 
 ### Phase 1: Toy OS origin
@@ -209,6 +217,11 @@ Once the language became expressive enough, the project started moving from
 - a standard `sh` compatibility command at `/system/bin/sh.peb`, `/bin/sh` path mapping, and formal launcher/login documentation in `docs/LAUNCHER.md` and `docs/SHELL_LOGIN.md`
 - a Pebble-native `bash.peb` front-end that can run scripts, `bash -c COMMAND`, and a simple interactive REPL without adding a Python-only command path
 - interactive `bash` now runs on the attached foreground terminal path, so `bash` REPL uses Pebble `input()` directly instead of the scheduler task fallback
+- foreground VM tasks now support scheduler-visible `blocked-input` and `blocked-tty` states, so interactive programs like `bash` and `nano` can wait on stdin or raw keys without dropping out of the VM task model
+- TTY/input behavior is now documented explicitly in `docs/TTY_INPUT.md`, including keyboard response requests, raw vs cooked terminal mode, and the per-task key queue used by foreground interactive programs
+- foreground TTY handling now gives attached interactive programs higher keyboard priority and waits briefly to decode delayed escape sequences such as arrow keys before falling back to a bare `ESC`
+- terminal control now has a dedicated Pebble kernel module in `pebble_system/kernel/term.peb`, with syscall-visible `term.state`, `term.mode`, and `term.owner_pgid` so Pebble-native interactive programs depend less on ad hoc host function names
+- the test suite now defaults to a faster core run, while the slower shell/TTY integration coverage moves behind `PEBBLE_RUN_SLOW_TESTS=1`
 
 - renaming the system to `Pebble OS`
 - separating the visible OS from the hidden Python host layer

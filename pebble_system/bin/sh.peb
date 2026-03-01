@@ -1,0 +1,8 @@
+if ARGC == 0:
+    print "Pebble sh compatibility entrypoint"
+    print "usage: sh FILE"
+    print "notes: this currently runs FILE in the current shell session"
+elif ARGC == 1:
+    source_shell_script(argv(0))
+else:
+    print "usage: sh FILE"

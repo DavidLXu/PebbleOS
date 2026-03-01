@@ -1,5 +1,6 @@
 import system.kernel.proc
 import system.kernel.syscall
+import system.kernel.term
 import system.lib.base
 
 VFS_BACKING_FILE = ".__pebble_vfs__.db"
@@ -1194,37 +1195,46 @@ def file_time(name):
     return fs_time(storage_name(normalize_path(name)))
 
 def term_write_line(text):
-    term_write(text + "\r\n")
+    system.kernel.term.write_text(text + "\r\n")
 
 def screen_rows():
-    return term_rows()
+    return system.kernel.term.rows()
 
 def screen_cols():
-    return term_cols()
+    return system.kernel.term.cols()
 
 def clear_screen():
-    term_clear()
+    system.kernel.term.clear_screen()
 
 def move_cursor(row, col):
-    term_move(row, col)
+    system.kernel.term.move_cursor(row, col)
 
 def hide_cursor():
-    term_hide_cursor()
+    system.kernel.term.hide_cursor()
 
 def show_cursor():
-    term_show_cursor()
+    system.kernel.term.show_cursor()
 
 def flush_screen():
-    term_flush()
+    system.kernel.term.flush_output()
 
 def read_key():
-    return term_read_key()
+    return system.kernel.term.read_key()
 
 def read_key_timeout(timeout_ms):
-    return term_read_key_timeout(timeout_ms)
+    return system.kernel.term.read_key_timeout(timeout_ms)
 
 def draw_text(text):
-    term_write(text)
+    system.kernel.term.write_text(text)
+
+def tty_owner_pgid():
+    return system.kernel.term.tty_owner_pgid()
+
+def tty_mode():
+    return system.kernel.term.tty_mode()
+
+def tty_state():
+    return system.kernel.term.tty_state()
 
 def runtime_banner():
     return "[runtime] Pebble runtime booting"

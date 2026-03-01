@@ -14,12 +14,24 @@ import tty
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+import time as time_module
 
 from pebble_bootloader.fs import FileSystemError, FlatFileSystem
-from pebble_bootloader.lang import PebbleBytecodeInterpreter, PebbleError, PebbleInterpreter
+from pebble_bootloader.lang import (
+    PebbleBytecodeInterpreter,
+    PebbleError,
+    PebbleInputBlocked,
+    PebbleInterpreter,
+    PebbleTTYBlocked,
+)
 
 
 VALID_FS_MODES = {"hostfs", "mfs", "mfs-import", "vfs-import", "vfs-persistent"}
+BACKGROUND_VM_STEP_BUDGET = 10
+FOREGROUND_VM_STEP_BUDGET = 5
+FOREGROUND_VM_KEY_PRIORITY_STEP_BUDGET = 20
+FOREGROUND_VM_IDLE_SLEEP_SECONDS = 0.02
+TTY_ESCAPE_SEQUENCE_GRACE_SECONDS = 0.05
 
 
 @dataclass
@@ -55,6 +67,12 @@ class VMTask:
     ppid: int = 1
     pgid: int = 0
     sid: int = 1
+    input_prompt: str | None = None
+    pending_input: str | None = None
+    pending_keys: list[str] = field(default_factory=list)
+    tty_timeout_seconds: float | None = None
+    pending_tty_bytes: list[str] = field(default_factory=list)
+    pending_escape_started_at: float | None = None
 
 
 @dataclass
@@ -115,6 +133,7 @@ class PebbleShell(cmd.Cmd):
         self._detach_requested = threading.Event()
         self._main_thread_id = threading.get_ident()
         self._terminal_owner_thread_id: int | None = None
+        self._foreground_terminal_raw = False
         self._shell_terminal_settings = self._capture_terminal_settings()
         self.fs.mount("system", Path(__file__).resolve().parent.parent / "pebble_system")
         self._ensure_phase4_layout()
@@ -632,6 +651,9 @@ class PebbleShell(cmd.Cmd):
                 "term_read_key_timeout": self._host_term_read_key_timeout,
                 "term_rows": self._host_term_rows,
                 "term_cols": self._host_term_cols,
+                "term_owner_pgid": self._host_term_owner_pgid,
+                "term_mode": self._host_term_mode,
+                "term_state": self._host_term_state,
                 "current_time": self._host_current_time,
                 "runtime_error": self._host_runtime_error,
             },
@@ -1221,14 +1243,21 @@ class PebbleShell(cmd.Cmd):
         if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
             raise PebbleError(f"line {line_number}: vm_create_task() expects a list of string arguments")
         runtime = self._make_runtime(consume_output=False)
+        task_ref: dict[str, VMTask | None] = {"task": None}
+        host_functions = dict(runtime.host_functions)
+        host_functions["term_read_key"] = lambda inner_args, inner_line: self._vm_task_read_key_provider(task_ref["task"], None)
+        host_functions["term_read_key_timeout"] = (
+            lambda inner_args, inner_line: self._vm_task_read_key_provider(
+                task_ref["task"],
+                (inner_args[0] / 1000.0) if len(inner_args) == 1 and isinstance(inner_args[0], int) else None,
+            )
+        )
         interpreter = PebbleBytecodeInterpreter(
             self.fs.root,
-            input_provider=lambda prompt="": (_ for _ in ()).throw(
-                PebbleError("input() is not available in scheduler-driven bytecode tasks")
-            ),
+            input_provider=lambda prompt="": self._vm_task_input_provider(task_ref["task"], prompt),
             output_consumer=None,
             path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, self.cwd)),
-            host_functions=runtime.host_functions,
+            host_functions=host_functions,
         )
         initial_globals = {
             "ARGV": list(argv),
@@ -1245,15 +1274,17 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: {exc}") from exc
         task_id = self._next_job_id
         self._next_job_id = self._next_job_id + 1
+        task = VMTask(
+            task_id=task_id,
+            command="vm",
+            program="<source>",
+            argv=list(argv),
+            cwd=self.cwd,
+            interpreter=interpreter,
+        )
+        task_ref["task"] = task
         with self._vm_lock:
-            self._vm_tasks[task_id] = VMTask(
-                task_id=task_id,
-                command="vm",
-                program="<source>",
-                argv=list(argv),
-                cwd=self.cwd,
-                interpreter=interpreter,
-            )
+            self._vm_tasks[task_id] = task
         return task_id
 
     def _host_vm_step_task(self, args: list[object], line_number: int) -> int:
@@ -1265,13 +1296,21 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: vm task {args[0]} does not exist")
         if args[1] < 0:
             raise PebbleError(f"line {line_number}: vm_step_task() step count cannot be negative")
-        if task.status in {"halted", "error"}:
+        if task.status in {"halted", "error", "blocked-input", "blocked-tty"}:
             return 0
         try:
             task.status = "running"
             count = task.interpreter.run_steps(args[1])
             task.status = "halted" if task.interpreter.vm_state.halted else "ready"
             return count
+        except PebbleInputBlocked as exc:
+            task.status = "blocked-input"
+            task.input_prompt = exc.prompt
+            return 0
+        except PebbleTTYBlocked as exc:
+            task.status = "blocked-tty"
+            task.tty_timeout_seconds = exc.timeout_seconds
+            return 0
         except PebbleError as exc:
             task.status = "error"
             task.error = str(exc)
@@ -1318,29 +1357,38 @@ class PebbleShell(cmd.Cmd):
         if snapshot is None:
             raise PebbleError(f"line {line_number}: vm snapshot {args[0]} does not exist")
         runtime = self._make_runtime(consume_output=False)
+        task_ref: dict[str, VMTask | None] = {"task": None}
+        host_functions = dict(runtime.host_functions)
+        host_functions["term_read_key"] = lambda inner_args, inner_line: self._vm_task_read_key_provider(task_ref["task"], None)
+        host_functions["term_read_key_timeout"] = (
+            lambda inner_args, inner_line: self._vm_task_read_key_provider(
+                task_ref["task"],
+                (inner_args[0] / 1000.0) if len(inner_args) == 1 and isinstance(inner_args[0], int) else None,
+            )
+        )
         interpreter = PebbleBytecodeInterpreter(
             self.fs.root,
-            input_provider=lambda prompt="": (_ for _ in ()).throw(
-                PebbleError("input() is not available in scheduler-driven bytecode tasks")
-            ),
+            input_provider=lambda prompt="": self._vm_task_input_provider(task_ref["task"], prompt),
             output_consumer=None,
             path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, self.cwd)),
-            host_functions=runtime.host_functions,
+            host_functions=host_functions,
         )
         interpreter.restore(snapshot)
         task_id = self._next_job_id
         self._next_job_id = self._next_job_id + 1
+        task = VMTask(
+            task_id=task_id,
+            command="vm",
+            program="<restored>",
+            argv=[],
+            cwd=self.cwd,
+            interpreter=interpreter,
+            outputs_consumed=len(interpreter.output),
+            status="halted" if interpreter.vm_state.halted else "ready",
+        )
+        task_ref["task"] = task
         with self._vm_lock:
-            self._vm_tasks[task_id] = VMTask(
-                task_id=task_id,
-                command="vm",
-                program="<restored>",
-                argv=[],
-                cwd=self.cwd,
-                interpreter=interpreter,
-                outputs_consumed=len(interpreter.output),
-                status="halted" if interpreter.vm_state.halted else "ready",
-            )
+            self._vm_tasks[task_id] = task
         return task_id
 
     def _host_vm_drop_task(self, args: list[object], line_number: int) -> int:
@@ -1444,18 +1492,27 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: term_read_key_timeout() timeout cannot be negative")
         return self._read_terminal_key(line_number, timeout_ms / 1000.0)
 
-    def _read_terminal_key(self, line_number: int, timeout_seconds: float | None) -> str:
+    def _read_terminal_key(
+        self,
+        line_number: int,
+        timeout_seconds: float | None,
+        escape_interrupts: bool = True,
+    ) -> str:
         if not self._terminal_access_allowed():
             return ""
         if not sys.stdin.isatty():
             raise PebbleError(f"line {line_number}: term_read_key() requires an interactive terminal")
         fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
         interrupt_requested = False
         timed_out = False
         result = ""
+        managed_raw = self._foreground_terminal_raw == 0
+        old_settings = None
+        if managed_raw:
+            old_settings = termios.tcgetattr(fd)
         try:
-            tty.setraw(fd)
+            if managed_raw:
+                tty.setraw(fd)
             if timeout_seconds is not None:
                 ready, _, _ = select.select([sys.stdin], [], [], timeout_seconds)
                 if not ready:
@@ -1466,7 +1523,54 @@ class PebbleShell(cmd.Cmd):
                 if first == "\x1b":
                     ready, _, _ = select.select([sys.stdin], [], [], 0.03)
                     if not ready:
-                        interrupt_requested = True
+                        if escape_interrupts:
+                            interrupt_requested = True
+                        else:
+                            ready, _, _ = select.select([sys.stdin], [], [], TTY_ESCAPE_SEQUENCE_GRACE_SECONDS)
+                            if not ready:
+                                result = "ESC"
+                            else:
+                                second = sys.stdin.read(1)
+                                if second == "O":
+                                    third = sys.stdin.read(1)
+                                    if third == "P":
+                                        self._detach_requested.set()
+                                        result = ""
+                                    else:
+                                        result = "ESC"
+                                elif second == "[":
+                                    third = sys.stdin.read(1)
+                                    if third == "A":
+                                        result = "UP"
+                                    elif third == "B":
+                                        result = "DOWN"
+                                    elif third == "C":
+                                        result = "RIGHT"
+                                    elif third == "D":
+                                        result = "LEFT"
+                                    elif third == "H":
+                                        result = "HOME"
+                                    elif third == "F":
+                                        result = "END"
+                                    elif third in {"1", "3", "4", "5", "6", "7", "8"}:
+                                        fourth = sys.stdin.read(1)
+                                        if fourth == "~":
+                                            if third in {"1", "7"}:
+                                                result = "HOME"
+                                            elif third == "3":
+                                                result = "DELETE"
+                                            elif third in {"4", "8"}:
+                                                result = "END"
+                                            elif third == "5":
+                                                result = "PAGEUP"
+                                            elif third == "6":
+                                                result = "PAGEDOWN"
+                                        else:
+                                            result = "ESC"
+                                    else:
+                                        result = "ESC"
+                                else:
+                                    result = "ESC"
                     else:
                         second = sys.stdin.read(1)
                         if second == "O":
@@ -1528,7 +1632,8 @@ class PebbleShell(cmd.Cmd):
                 else:
                     result = first
         finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            if managed_raw and old_settings is not None:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         if interrupt_requested:
             raise KeyboardInterrupt
         return result
@@ -1549,12 +1654,29 @@ class PebbleShell(cmd.Cmd):
             return None
 
     def _restore_shell_terminal(self) -> None:
+        self._foreground_terminal_raw = False
         if self._shell_terminal_settings is None or not sys.stdin.isatty():
             return
         try:
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._shell_terminal_settings)
         except termios.error:
             return
+
+    def _set_foreground_terminal_raw(self, enabled: bool) -> None:
+        if not sys.stdin.isatty() or self._shell_terminal_settings is None:
+            self._foreground_terminal_raw = enabled
+            return
+        fd = sys.stdin.fileno()
+        try:
+            if enabled:
+                if not self._foreground_terminal_raw:
+                    tty.setraw(fd)
+            else:
+                if self._foreground_terminal_raw:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, self._shell_terminal_settings)
+        except termios.error:
+            return
+        self._foreground_terminal_raw = enabled
 
     def _emit_runtime_output(self, text: str) -> None:
         if self._active_stdout_fd is not None:
@@ -1604,6 +1726,30 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: term_cols() expected 0 arguments but got {len(args)}")
         return shutil.get_terminal_size((80, 24)).columns
 
+    def _host_term_owner_pgid(self, args: list[object], line_number: int) -> int:
+        if args:
+            raise PebbleError(f"line {line_number}: term_owner_pgid() expected 0 arguments but got {len(args)}")
+        return self._current_foreground_pgid or 0
+
+    def _host_term_mode(self, args: list[object], line_number: int) -> str:
+        if args:
+            raise PebbleError(f"line {line_number}: term_mode() expected 0 arguments but got {len(args)}")
+        if self._foreground_terminal_raw:
+            return "raw"
+        return "cooked"
+
+    def _host_term_state(self, args: list[object], line_number: int) -> dict[str, object]:
+        if args:
+            raise PebbleError(f"line {line_number}: term_state() expected 0 arguments but got {len(args)}")
+        return {
+            "owner_pgid": self._current_foreground_pgid or 0,
+            "mode": "raw" if self._foreground_terminal_raw else "cooked",
+            "interactive": 1 if sys.stdin.isatty() else 0,
+            "foreground_raw": 1 if self._foreground_terminal_raw else 0,
+            "rows": shutil.get_terminal_size((80, 24)).lines,
+            "cols": shutil.get_terminal_size((80, 24)).columns,
+        }
+
     def _host_current_time(self, args: list[object], line_number: int) -> str:
         if args:
             raise PebbleError(f"line {line_number}: current_time() expected 0 arguments but got {len(args)}")
@@ -1613,20 +1759,200 @@ class PebbleShell(cmd.Cmd):
         message = self._require_string_arg("runtime_error", args, line_number, 1)
         raise PebbleError(f"line {line_number}: {message}")
 
+    def _vm_task_input_provider(self, task: VMTask | None, prompt: str) -> str:
+        if task is None:
+            raise PebbleError("input() is not available in scheduler-driven bytecode tasks")
+        if task.pending_input is not None:
+            value = task.pending_input
+            task.pending_input = None
+            task.input_prompt = None
+            return value
+        raise PebbleInputBlocked(prompt)
+
+    def _vm_task_read_key_provider(self, task: VMTask | None, timeout_seconds: float | None) -> str:
+        if task is None:
+            return ""
+        if task.pending_keys:
+            value = task.pending_keys.pop(0)
+            task.tty_timeout_seconds = None
+            return value
+        raise PebbleTTYBlocked(timeout_seconds)
+
+    def _collect_foreground_terminal_keys(self, task: VMTask, timeout_seconds: float | None) -> list[str]:
+        first = self._read_terminal_byte(timeout_seconds)
+        if first != "":
+            task.pending_tty_bytes.append(first)
+            if first == "\x1b" and len(task.pending_tty_bytes) == 1:
+                task.pending_escape_started_at = time_module.monotonic()
+            self._drain_ready_terminal_bytes(task)
+        elif task.pending_tty_bytes and task.pending_tty_bytes[0] == "\x1b":
+            if task.pending_escape_started_at is None:
+                task.pending_escape_started_at = time_module.monotonic()
+            elif time_module.monotonic() - task.pending_escape_started_at >= TTY_ESCAPE_SEQUENCE_GRACE_SECONDS:
+                task.pending_tty_bytes.pop(0)
+                task.pending_escape_started_at = None
+                return ["ESC"]
+        keys = self._parse_pending_tty_events(task)
+        return keys
+
+    def _drain_ready_terminal_bytes(self, task: VMTask) -> None:
+        while True:
+            extra = self._read_terminal_byte(0.0)
+            if extra == "":
+                return
+            task.pending_tty_bytes.append(extra)
+            if task.pending_tty_bytes and task.pending_tty_bytes[0] == "\x1b":
+                task.pending_escape_started_at = time_module.monotonic()
+
+    def _parse_pending_tty_events(self, task: VMTask) -> list[str]:
+        events: list[str] = []
+        while task.pending_tty_bytes:
+            first = task.pending_tty_bytes[0]
+            if first == "\x03":
+                task.pending_tty_bytes.pop(0)
+                task.pending_escape_started_at = None
+                raise KeyboardInterrupt
+            if first == "\x1a":
+                task.pending_tty_bytes.pop(0)
+                task.pending_escape_started_at = None
+                self._detach_requested.set()
+                events.append("")
+                continue
+            if first in {"\r", "\n"}:
+                task.pending_tty_bytes.pop(0)
+                task.pending_escape_started_at = None
+                events.append("ENTER")
+                continue
+            if first == "\x7f":
+                task.pending_tty_bytes.pop(0)
+                task.pending_escape_started_at = None
+                events.append("BACKSPACE")
+                continue
+            if first == "\x18":
+                task.pending_tty_bytes.pop(0)
+                task.pending_escape_started_at = None
+                events.append("^X")
+                continue
+            if first == "\x0f":
+                task.pending_tty_bytes.pop(0)
+                task.pending_escape_started_at = None
+                events.append("^O")
+                continue
+            if first != "\x1b":
+                task.pending_tty_bytes.pop(0)
+                task.pending_escape_started_at = None
+                events.append(first)
+                continue
+            if len(task.pending_tty_bytes) == 1:
+                return events
+            second = task.pending_tty_bytes[1]
+            if second == "O":
+                if len(task.pending_tty_bytes) < 3:
+                    return events
+                third = task.pending_tty_bytes[2]
+                del task.pending_tty_bytes[:3]
+                task.pending_escape_started_at = None
+                if third == "P":
+                    self._detach_requested.set()
+                    events.append("")
+                else:
+                    events.append("ESC")
+                continue
+            if second != "[":
+                task.pending_tty_bytes.pop(0)
+                task.pending_escape_started_at = None
+                events.append("ESC")
+                continue
+            if len(task.pending_tty_bytes) < 3:
+                return events
+            third = task.pending_tty_bytes[2]
+            if third == "A":
+                del task.pending_tty_bytes[:3]
+                task.pending_escape_started_at = None
+                events.append("UP")
+                continue
+            if third == "B":
+                del task.pending_tty_bytes[:3]
+                task.pending_escape_started_at = None
+                events.append("DOWN")
+                continue
+            if third == "C":
+                del task.pending_tty_bytes[:3]
+                task.pending_escape_started_at = None
+                events.append("RIGHT")
+                continue
+            if third == "D":
+                del task.pending_tty_bytes[:3]
+                task.pending_escape_started_at = None
+                events.append("LEFT")
+                continue
+            if third == "H":
+                del task.pending_tty_bytes[:3]
+                task.pending_escape_started_at = None
+                events.append("HOME")
+                continue
+            if third == "F":
+                del task.pending_tty_bytes[:3]
+                task.pending_escape_started_at = None
+                events.append("END")
+                continue
+            if third in {"1", "3", "4", "5", "6", "7", "8"}:
+                if len(task.pending_tty_bytes) < 4:
+                    return events
+                fourth = task.pending_tty_bytes[3]
+                del task.pending_tty_bytes[:4]
+                task.pending_escape_started_at = None
+                if fourth == "~":
+                    if third in {"1", "7"}:
+                        events.append("HOME")
+                    elif third == "3":
+                        events.append("DELETE")
+                    elif third in {"4", "8"}:
+                        events.append("END")
+                    elif third == "5":
+                        events.append("PAGEUP")
+                    elif third == "6":
+                        events.append("PAGEDOWN")
+                else:
+                    events.append("ESC")
+                continue
+            task.pending_tty_bytes.pop(0)
+            task.pending_escape_started_at = None
+            events.append("ESC")
+        return events
+
+    def _read_terminal_byte(self, timeout_seconds: float | None) -> str:
+        if not self._terminal_access_allowed():
+            return ""
+        if not sys.stdin.isatty():
+            return ""
+        if timeout_seconds is not None:
+            ready, _, _ = select.select([sys.stdin], [], [], timeout_seconds)
+            if not ready:
+                return ""
+        return sys.stdin.read(1)
+
     def _create_vm_task(self, name: str, extra_args: list[str], command_name: str, cwd: str | None = None) -> int:
         cwd_value = self.cwd if cwd is None else cwd
         program = self._normalize_user_path(name, cwd_value)
         runtime_source = self.fs.read_file("system/runtime.peb")
         source = runtime_source + "\n" + self.fs.read_file(program.lstrip("/"))
         runtime = self._make_runtime(consume_output=False)
+        task_ref: dict[str, VMTask | None] = {"task": None}
+        host_functions = dict(runtime.host_functions)
+        host_functions["term_read_key"] = lambda inner_args, inner_line: self._vm_task_read_key_provider(task_ref["task"], None)
+        host_functions["term_read_key_timeout"] = (
+            lambda inner_args, inner_line: self._vm_task_read_key_provider(
+                task_ref["task"],
+                (inner_args[0] / 1000.0) if len(inner_args) == 1 and isinstance(inner_args[0], int) else None,
+            )
+        )
         interpreter = PebbleBytecodeInterpreter(
             self.fs.root,
-            input_provider=lambda prompt="": (_ for _ in ()).throw(
-                PebbleError("input() is not available in scheduler-driven bytecode tasks")
-            ),
+            input_provider=lambda prompt="": self._vm_task_input_provider(task_ref["task"], prompt),
             output_consumer=None,
             path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, cwd_value)),
-            host_functions=runtime.host_functions,
+            host_functions=host_functions,
         )
         initial_globals = {
             "ARGV": list(extra_args),
@@ -1637,21 +1963,33 @@ class PebbleShell(cmd.Cmd):
             "ENV": dict(self._runtime_env_override or self.env),
             "PATH": str((self._runtime_env_override or self.env).get("PATH", "")),
         }
+        if program in {"/system/nano.peb", "/nano.peb", "system/nano.peb", "nano.peb"} and extra_args:
+            target_file = extra_args[0]
+            try:
+                file_content = self.fs.read_file(target_file.lstrip("/"))
+            except FileSystemError:
+                file_content = ""
+            initial_globals["TARGET_FILE"] = target_file
+            initial_globals["FILE_CONTENT"] = file_content
         interpreter.prepare(source, initial_globals=initial_globals)
+        task = VMTask(
+            task_id=0,
+            command=command_name + " " + program,
+            program=program,
+            argv=list(extra_args),
+            cwd=cwd_value,
+            interpreter=interpreter,
+            ppid=1,
+            pgid=0,
+            sid=1,
+        )
+        task_ref["task"] = task
         with self._vm_lock:
             task_id = self._next_job_id
             self._next_job_id = self._next_job_id + 1
-            self._vm_tasks[task_id] = VMTask(
-                task_id=task_id,
-                command=command_name + " " + program,
-                program=program,
-                argv=list(extra_args),
-                cwd=cwd_value,
-                interpreter=interpreter,
-                ppid=1,
-                pgid=task_id,
-                sid=1,
-            )
+            task.task_id = task_id
+            task.pgid = task_id
+            self._vm_tasks[task_id] = task
         return task_id
 
     def _vm_scheduler_loop(self) -> None:
@@ -1660,13 +1998,19 @@ class PebbleShell(cmd.Cmd):
             with self._vm_lock:
                 tasks = [self._vm_tasks[key] for key in sorted(self._vm_tasks)]
             for task in tasks:
-                if task.status in {"halted", "error"} or task.attached:
+                if task.status in {"halted", "error", "blocked-input", "blocked-tty"} or task.attached:
                     continue
                 try:
                     task.status = "running"
-                    task.interpreter.run_steps(10)
+                    task.interpreter.run_steps(BACKGROUND_VM_STEP_BUDGET)
                     task.status = "halted" if task.interpreter.vm_state.halted else "ready"
                     self._notify_sigchld_for_task(task)
+                except PebbleInputBlocked as exc:
+                    task.status = "blocked-input"
+                    task.input_prompt = exc.prompt
+                except PebbleTTYBlocked as exc:
+                    task.status = "blocked-tty"
+                    task.tty_timeout_seconds = exc.timeout_seconds
                 except PebbleError as exc:
                     task.status = "error"
                     task.error = str(exc)
@@ -1681,18 +2025,73 @@ class PebbleShell(cmd.Cmd):
         self._foreground_pgid = task.pgid
         self._terminal_owner_thread_id = self._main_thread_id
         while True:
-            if task.status not in {"halted", "error"}:
+            if task.status == "blocked-input":
+                self._set_foreground_terminal_raw(False)
+                try:
+                    line = input(task.input_prompt or "")
+                except EOFError:
+                    line = ""
+                except KeyboardInterrupt:
+                    self._emit_signal_event("SIGINT", task.task_id, task.pgid, "vm", "foreground")
+                    task.attached = False
+                    task.status = "error"
+                    task.error = "[system] program interrupted"
+                    if self._foreground_pgid == task.pgid:
+                        self._foreground_pgid = None
+                    self._terminal_owner_thread_id = None
+                    with self._vm_lock:
+                        self._vm_tasks.pop(task_id, None)
+                    print("^C")
+                    print("[system] program interrupted", flush=True)
+                    return False
+                task.pending_input = line
+                task.input_prompt = None
+                task.status = "ready"
+            elif task.status == "blocked-tty":
+                self._set_foreground_terminal_raw(True)
+                try:
+                    keys = self._collect_foreground_terminal_keys(task, task.tty_timeout_seconds)
+                except KeyboardInterrupt:
+                    self._emit_signal_event("SIGINT", task.task_id, task.pgid, "vm", "foreground")
+                    task.attached = False
+                    task.status = "error"
+                    task.error = "[system] program interrupted"
+                    if self._foreground_pgid == task.pgid:
+                        self._foreground_pgid = None
+                    self._terminal_owner_thread_id = None
+                    with self._vm_lock:
+                        self._vm_tasks.pop(task_id, None)
+                    print("^C")
+                    print("[system] program interrupted", flush=True)
+                    return False
+                if len(keys) == 0:
+                    task.status = "blocked-tty"
+                    continue
+                task.pending_keys = list(keys)
+                task.tty_timeout_seconds = None
+                task.status = "ready"
+            elif task.status not in {"halted", "error"}:
                 try:
                     task.status = "running"
-                    task.interpreter.run_steps(5)
+                    step_budget = FOREGROUND_VM_STEP_BUDGET
+                    if task.pending_keys:
+                        step_budget = FOREGROUND_VM_KEY_PRIORITY_STEP_BUDGET
+                    task.interpreter.run_steps(step_budget)
                     task.status = "halted" if task.interpreter.vm_state.halted else "ready"
                     self._notify_sigchld_for_task(task)
+                except PebbleInputBlocked as exc:
+                    task.status = "blocked-input"
+                    task.input_prompt = exc.prompt
+                except PebbleTTYBlocked as exc:
+                    task.status = "blocked-tty"
+                    task.tty_timeout_seconds = exc.timeout_seconds
                 except PebbleError as exc:
                     task.status = "error"
                     task.error = str(exc)
                     self._notify_sigchld_for_task(task)
             self._emit_new_vm_output(task)
             if task.status in {"halted", "error"}:
+                self._set_foreground_terminal_raw(False)
                 task.attached = False
                 if self._foreground_pgid == task.pgid:
                     self._foreground_pgid = None
@@ -1707,6 +2106,7 @@ class PebbleShell(cmd.Cmd):
                 return False
             action = self._poll_foreground_job_action()
             if action == "interrupt":
+                self._set_foreground_terminal_raw(False)
                 self._emit_signal_event("SIGINT", task.task_id, task.pgid, "vm", "foreground")
                 task.attached = False
                 if self._foreground_pgid == task.pgid:
@@ -1718,13 +2118,16 @@ class PebbleShell(cmd.Cmd):
                 print("[system] program interrupted", flush=True)
                 return False
             if action == "detach":
+                self._set_foreground_terminal_raw(False)
                 self._emit_signal_event("SIGTSTP", task.task_id, task.pgid, "vm", "foreground")
                 task.attached = False
                 if self._foreground_pgid == task.pgid:
                     self._foreground_pgid = None
                 self._terminal_owner_thread_id = None
                 return True
-            time.sleep(0.02)
+            if task.pending_keys:
+                continue
+            time.sleep(FOREGROUND_VM_IDLE_SLEEP_SECONDS)
 
     def _emit_new_vm_output(self, task: VMTask) -> None:
         while task.outputs_consumed < len(task.interpreter.output):
@@ -1732,7 +2135,7 @@ class PebbleShell(cmd.Cmd):
             task.outputs_consumed = task.outputs_consumed + 1
 
     def _run_program(self, name: str, extra_args: list[str], exec_mode: str = "interp", cwd: str | None = None) -> None:
-        if name in {"nano.peb", "system/nano.peb", "bash.peb", "system/bin/bash.peb"} or not sys.stdin.isatty():
+        if not sys.stdin.isatty():
             _, output, error = self._execute_program(name, extra_args, exec_mode=exec_mode, cwd=cwd)
             if error is not None:
                 if error == "__interrupt__":
@@ -1805,7 +2208,7 @@ class PebbleShell(cmd.Cmd):
                 path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, cwd_value)),
                 host_functions=self._make_runtime(consume_output=False).host_functions,
             )
-        interactive_program = name in {"nano.peb", "system/nano.peb", "bash.peb", "system/bin/bash.peb"}
+        interactive_program = 0
         if interactive_program and extra_args:
             target_file = extra_args[0]
             self._logical_path_to_host(self._normalize_user_path(target_file, cwd_value))
