@@ -380,6 +380,44 @@ def memory_store(base, items):
         i = i + 1
     return len(items)
 
+def memory_zero(base, count):
+    if count < 0:
+        runtime_fail("memory.zero() requires a non-negative count")
+    i = 0
+    while i < count:
+        memory_write(base + i, 0)
+        i = i + 1
+    return count
+
+def memory_move(src, dst, count):
+    if count < 0:
+        runtime_fail("memory.move() requires a non-negative count")
+    if dst > src and dst < src + count:
+        i = count - 1
+        while i >= 0:
+            memory_write(dst + i, memory_read(src + i))
+            i = i - 1
+        return count
+    i = 0
+    while i < count:
+        memory_write(dst + i, memory_read(src + i))
+        i = i + 1
+    return count
+
+def memory_compare(left, right, count):
+    if count < 0:
+        runtime_fail("memory.compare() requires a non-negative count")
+    i = 0
+    while i < count:
+        left_value = memory_read(left + i)
+        right_value = memory_read(right + i)
+        if left_value < right_value:
+            return -1
+        if left_value > right_value:
+            return 1
+        i = i + 1
+    return 0
+
 def memory_dump():
     return memory_slice(0, MEMORY_BOX["size"])
 
@@ -394,6 +432,15 @@ def memory_alloc(count):
 
 def memory_top():
     return MEMORY_BOX["next_free"]
+
+def memory_mark():
+    return MEMORY_BOX["next_free"]
+
+def memory_reset(mark):
+    if mark < 0 or mark > MEMORY_BOX["size"]:
+        runtime_fail("memory.reset() mark is out of range")
+    MEMORY_BOX["next_free"] = mark
+    return mark
 
 HEAP_BOX = {"base": 0, "limit": 0, "next": 0, "count": 0}
 
@@ -465,6 +512,22 @@ def heap_store(ptr, items):
 
 def heap_slice(ptr):
     return memory_slice(heap_payload_base(ptr), heap_size(ptr))
+
+def heap_mark():
+    return [HEAP_BOX["next"], HEAP_BOX["count"]]
+
+def heap_reset(mark):
+    if len(mark) != 2:
+        runtime_fail("heap.reset() expects a mark created by heap.mark()")
+    next_value = mark[0]
+    count_value = mark[1]
+    if next_value < HEAP_BOX["base"] or next_value > HEAP_BOX["limit"]:
+        runtime_fail("heap.reset() mark is out of range")
+    if count_value < 0:
+        runtime_fail("heap.reset() count cannot be negative")
+    HEAP_BOX["next"] = next_value
+    HEAP_BOX["count"] = count_value
+    return HEAP_BOX["next"]
 
 def text_len(text):
     return len(text)
@@ -1131,6 +1194,111 @@ def draw_text(text):
 
 def runtime_banner():
     return "[runtime] Pebble runtime booting"
+
+RUNTIME_SCHEDULER = {"ready": [], "tasks": {}, "snapshots": {}}
+
+def scheduler_new():
+    RUNTIME_SCHEDULER["ready"] = []
+    RUNTIME_SCHEDULER["tasks"] = {}
+    RUNTIME_SCHEDULER["snapshots"] = {}
+    return 0
+
+def task_record_new(task_id, name, argv):
+    task = {}
+    task["id"] = task_id
+    task["name"] = name
+    task["argv"] = argv
+    task["status"] = "ready"
+    task["outputs"] = []
+    task["snapshots"] = []
+    return task
+
+def scheduler_spawn_source(name, source, argv):
+    task_id = vm_create_task(source, argv)
+    RUNTIME_SCHEDULER["tasks"][task_id] = task_record_new(task_id, name, argv)
+    append(RUNTIME_SCHEDULER["ready"], task_id)
+    return task_id
+
+def scheduler_has_task(task_id):
+    return dict_has_key(RUNTIME_SCHEDULER["tasks"], task_id)
+
+def scheduler_task(task_id):
+    if scheduler_has_task(task_id) == 0:
+        runtime_fail("scheduler task not found: " + str(task_id))
+    return RUNTIME_SCHEDULER["tasks"][task_id]
+
+def scheduler_step_task(task_id, steps):
+    if scheduler_has_task(task_id) == 0:
+        runtime_fail("scheduler task not found: " + str(task_id))
+    ran = vm_step_task(task_id, steps)
+    RUNTIME_SCHEDULER["tasks"][task_id]["status"] = vm_task_status(task_id)
+    outputs = vm_take_task_output(task_id)
+    i = 0
+    while i < len(outputs):
+        append(RUNTIME_SCHEDULER["tasks"][task_id]["outputs"], outputs[i])
+        i = i + 1
+    return ran
+
+def scheduler_step_ready(steps):
+    if len(RUNTIME_SCHEDULER["ready"]) == 0:
+        return 0
+    task_id = RUNTIME_SCHEDULER["ready"][0]
+    ready_tail = []
+    i = 1
+    while i < len(RUNTIME_SCHEDULER["ready"]):
+        append(ready_tail, RUNTIME_SCHEDULER["ready"][i])
+        i = i + 1
+    RUNTIME_SCHEDULER["ready"] = ready_tail
+    ran = scheduler_step_task(task_id, steps)
+    status = RUNTIME_SCHEDULER["tasks"][task_id]["status"]
+    if status == "ready" or status == "running":
+        append(RUNTIME_SCHEDULER["ready"], task_id)
+    return ran
+
+def scheduler_snapshot_task(task_id):
+    if scheduler_has_task(task_id) == 0:
+        runtime_fail("scheduler task not found: " + str(task_id))
+    snapshot_id = vm_snapshot_task(task_id)
+    append(RUNTIME_SCHEDULER["tasks"][task_id]["snapshots"], snapshot_id)
+    RUNTIME_SCHEDULER["snapshots"][snapshot_id] = task_id
+    return snapshot_id
+
+def scheduler_restore_snapshot(snapshot_id, name):
+    task_id = vm_restore_task(snapshot_id)
+    RUNTIME_SCHEDULER["tasks"][task_id] = task_record_new(task_id, name, [])
+    append(RUNTIME_SCHEDULER["ready"], task_id)
+    append(RUNTIME_SCHEDULER["tasks"][task_id]["snapshots"], snapshot_id)
+    return task_id
+
+def scheduler_take_output(task_id):
+    if scheduler_has_task(task_id) == 0:
+        runtime_fail("scheduler task not found: " + str(task_id))
+    out = RUNTIME_SCHEDULER["tasks"][task_id]["outputs"]
+    RUNTIME_SCHEDULER["tasks"][task_id]["outputs"] = []
+    return out
+
+def scheduler_drop_task(task_id):
+    if scheduler_has_task(task_id) == 0:
+        return 0
+    vm_drop_task(task_id)
+    tasks = RUNTIME_SCHEDULER["tasks"]
+    filtered = {}
+    ids = keys(tasks)
+    i = 0
+    while i < len(ids):
+        current = ids[i]
+        if current != task_id:
+            filtered[current] = tasks[current]
+        i = i + 1
+    RUNTIME_SCHEDULER["tasks"] = filtered
+    next_ready = []
+    j = 0
+    while j < len(RUNTIME_SCHEDULER["ready"]):
+        if RUNTIME_SCHEDULER["ready"][j] != task_id:
+            append(next_ready, RUNTIME_SCHEDULER["ready"][j])
+        j = j + 1
+    RUNTIME_SCHEDULER["ready"] = next_ready
+    return 0
 
 def boot():
     if is_vfs_mode():

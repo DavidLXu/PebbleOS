@@ -1,7 +1,0 @@
-tokens = []
-append(tokens, "A")
-append(tokens, "B")
-i = 0
-while i < len(tokens):
-    print tokens[i]
-    i = i + 1

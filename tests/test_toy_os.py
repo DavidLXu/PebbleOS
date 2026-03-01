@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import tempfile
+import termios
+import threading
+import time
 import unittest
+import types
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -471,6 +475,36 @@ class PebbleInterpreterTests(unittest.TestCase):
         )
         self.assertEqual(output, ["[4, 5, 6]", "3", "[4, 5, 6]", "[4, 5, 6, 4, 5, 6]"])
 
+    def test_import_memory_module_supports_marks_moves_and_compare(self) -> None:
+        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        output = PebbleInterpreter(
+            host_functions={
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+            }
+        ).execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    "import memory",
+                    "memory.init(8)",
+                    "memory.store(0, [1, 2, 3, 4])",
+                    "print memory.move(0, 2, 4)",
+                    "print memory.slice(0, 6)",
+                    "print memory.compare(0, 2, 2)",
+                    "mark = memory.mark()",
+                    "print memory.alloc(2)",
+                    "print memory.top()",
+                    "print memory.reset(mark)",
+                    "print memory.top()",
+                    "print memory.zero(0, 3)",
+                    "print memory.slice(0, 4)",
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["4", "[1, 2, 1, 2, 3, 4]", "0", "0", "2", "0", "0", "3", "[0, 0, 0, 2]"])
+
     def test_import_heap_module_allocates_objects(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
@@ -499,6 +533,34 @@ class PebbleInterpreterTests(unittest.TestCase):
             initial_globals={"FS_MODE": "hostfs"},
         )
         self.assertEqual(output, ["12", "0", "pair", "2", "7", "9", "9", "[7, 9]", "4", "1"])
+
+    def test_import_heap_module_supports_marks_and_reset(self) -> None:
+        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        output = PebbleInterpreter(
+            host_functions={
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+            }
+        ).execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    "import heap",
+                    "print heap.init(16)",
+                    'first = heap.alloc("pair", 2)',
+                    "mark = heap.mark()",
+                    'second = heap.alloc("triple", 3)',
+                    "print second",
+                    "print heap.count()",
+                    "print heap.reset(mark)",
+                    "print heap.count()",
+                    'third = heap.alloc("solo", 1)',
+                    "print third",
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["16", "4", "2", "4", "1", "4"])
 
     def test_supports_file_based_module_imports(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -643,6 +705,37 @@ class PebbleInterpreterTests(unittest.TestCase):
         )
         self.assertEqual(output, ["3", "[1, 2, 3]", "10", "3", "[8, 9, 10]"])
 
+    def test_bytecode_mode_supports_memory_marks_and_heap_reset(self) -> None:
+        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        output = PebbleBytecodeInterpreter(
+            host_functions={
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+            }
+        ).execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    "import memory",
+                    "import heap",
+                    "memory.init(6)",
+                    "memory.store(0, [9, 8, 7])",
+                    "mark = memory.mark()",
+                    "print memory.alloc(2)",
+                    "print memory.reset(mark)",
+                    "print memory.move(0, 1, 3)",
+                    "print memory.slice(0, 4)",
+                    "print heap.init(12)",
+                    "hmark = heap.mark()",
+                    'print heap.alloc("two", 2)',
+                    "print heap.reset(hmark)",
+                    "print heap.count()",
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["0", "0", "3", "[9, 9, 8, 7]", "12", "0", "0", "0"])
+
     def test_bytecode_vm_tracks_frame_stack(self) -> None:
         interpreter = PebbleBytecodeInterpreter()
         output = interpreter.execute(
@@ -657,6 +750,48 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["5"])
         self.assertEqual(len(interpreter.vm_state.frame_stack), 0)
         self.assertEqual(len(interpreter.vm_state.value_stack), 0)
+
+    def test_bytecode_vm_can_step_through_program(self) -> None:
+        interpreter = PebbleBytecodeInterpreter()
+        interpreter.prepare(
+            "\n".join(
+                [
+                    "x = 1",
+                    "print x",
+                    "x = x + 1",
+                    "print x",
+                ]
+            )
+        )
+        self.assertEqual(interpreter.run_steps(1), 1)
+        self.assertEqual(interpreter.output, [])
+        self.assertEqual(interpreter.globals["x"], 1)
+        self.assertEqual(interpreter.run_steps(1), 1)
+        self.assertEqual(interpreter.output, ["1"])
+        self.assertEqual(interpreter.run_until_complete(), ["1", "2"])
+        self.assertTrue(interpreter.vm_state.halted)
+
+    def test_bytecode_vm_snapshot_restore_resumes_loop(self) -> None:
+        interpreter = PebbleBytecodeInterpreter()
+        interpreter.prepare(
+            "\n".join(
+                [
+                    "x = 0",
+                    "while x < 3:",
+                    "    x = x + 1",
+                    "    print x",
+                ]
+            )
+        )
+        self.assertEqual(interpreter.run_steps(5), 5)
+        self.assertEqual(interpreter.output, ["1"])
+        snapshot = interpreter.snapshot()
+        self.assertEqual(interpreter.run_until_complete(), ["1", "2", "3"])
+
+        restored = PebbleBytecodeInterpreter()
+        restored.restore(snapshot)
+        self.assertEqual(restored.run_until_complete(), ["1", "2", "3"])
+        self.assertEqual(restored.globals["x"], 3)
 
     def test_bytecode_mode_supports_file_based_module_imports(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -754,20 +889,38 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         self.assertIn("^C", outputs)
         self.assertIn("[system] program interrupted", outputs)
 
-    def test_term_read_key_maps_f1_to_suspend_and_resume(self) -> None:
+    def test_cmdloop_installs_readline_completer(self) -> None:
         shell = build_shell()
-        chars = iter(["\x1b", "O", "P", "a"])
+        fake_readline = types.SimpleNamespace()
+        events: list[object] = []
+        fake_readline.get_completer = lambda: "old"
+        fake_readline.set_completer = lambda value: events.append(("set", value))
+        fake_readline.parse_and_bind = lambda spec: events.append(("bind", spec))
+        fake_input_calls = iter(["exit"])
+
+        with patch.dict("sys.modules", {"readline": fake_readline}):
+            with patch("builtins.input", side_effect=lambda prompt="": next(fake_input_calls)):
+                with patch.object(shell, "preloop"), patch.object(shell, "postloop"):
+                    shell.cmdloop()
+
+        self.assertEqual(events[0][0], "set")
+        self.assertEqual(events[1], ("bind", "tab: complete"))
+        self.assertEqual(events[-1], ("set", "old"))
+
+    def test_term_read_key_maps_f1_to_global_detach_request(self) -> None:
+        shell = build_shell()
+        chars = iter(["\x1b", "O", "P"])
 
         with patch("sys.stdin.isatty", return_value=True), patch("sys.stdin.fileno", return_value=0):
             with patch("sys.stdin.read", side_effect=lambda size=1: next(chars)):
                 with patch("select.select", side_effect=[([object()], [], []), ([object()], [], [])]):
                     with patch("termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0]), patch(
                         "termios.tcsetattr", return_value=None
-                    ), patch("tty.setraw", return_value=None), patch.object(shell, "_suspend_process") as suspend:
+                    ), patch("tty.setraw", return_value=None):
                         key = shell._read_terminal_key(1, None)
 
-        self.assertEqual(key, "a")
-        suspend.assert_called_once()
+        self.assertEqual(key, "")
+        self.assertTrue(shell._detach_requested.is_set())
 
     def test_term_read_key_maps_escape_to_interrupt(self) -> None:
         shell = build_shell()
@@ -780,6 +933,66 @@ class PebbleShellRuntimeTests(unittest.TestCase):
                     ), patch("tty.setraw", return_value=None):
                         with self.assertRaises(KeyboardInterrupt):
                             shell._read_terminal_key(1, None)
+
+    def test_term_read_key_maps_ctrl_z_to_detach_request(self) -> None:
+        shell = build_shell()
+
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdin.fileno", return_value=0):
+            with patch("sys.stdin.read", return_value="\x1a"):
+                with patch("select.select", return_value=([object()], [], [])):
+                    with patch("termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0]), patch(
+                        "termios.tcsetattr", return_value=None
+                    ), patch("tty.setraw", return_value=None):
+                        key = shell._read_terminal_key(1, None)
+
+        self.assertEqual(key, "")
+        self.assertTrue(shell._detach_requested.is_set())
+
+    def test_background_threads_cannot_consume_terminal_input(self) -> None:
+        shell = build_shell()
+        value_box: list[str] = []
+
+        def worker():
+            value_box.append(shell._read_terminal_key(1, None))
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+
+        self.assertEqual(value_box, [""])
+
+    def test_runtime_output_uses_crlf_on_tty(self) -> None:
+        shell = build_shell()
+        writes: list[str] = []
+
+        with patch("sys.stdout.isatty", return_value=True), patch("sys.stdout.write", side_effect=writes.append), patch(
+            "sys.stdout.flush", return_value=None
+        ):
+            shell._emit_runtime_output("hello")
+
+        self.assertEqual(writes, ["hello\r\n"])
+
+    def test_reset_to_prompt_line_uses_crlf_on_tty(self) -> None:
+        shell = build_shell()
+        writes: list[str] = []
+
+        with patch("sys.stdout.isatty", return_value=True), patch("sys.stdout.write", side_effect=writes.append), patch(
+            "sys.stdout.flush", return_value=None
+        ):
+            shell._reset_to_prompt_line()
+
+        self.assertEqual(writes, ["\r\n"])
+
+    def test_restore_shell_terminal_reapplies_saved_settings(self) -> None:
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdin.fileno", return_value=0):
+            with patch("termios.tcgetattr", return_value=[1, 2, 3, 4, 5, 6]):
+                shell = build_shell()
+
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdin.fileno", return_value=0):
+            with patch("termios.tcsetattr", return_value=None) as mock_setattr:
+                shell._restore_shell_terminal()
+
+        mock_setattr.assert_called_once_with(0, termios.TCSADRAIN, [1, 2, 3, 4, 5, 6])
 
     def test_runtime_shell_handles_help_ls_and_exit(self) -> None:
         shell = build_shell()
@@ -893,6 +1106,85 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         self.assertTrue(any("[1] " in line and "runbg /bg_test.peb" in line for line in outputs))
         self.assertIn("job output", outputs)
         self.assertIn("[1] done", outputs)
+
+    def test_foreground_run_can_detach_into_jobs(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("fg_detach_test.peb")
+        target.write_text('i = 0\nwhile i < 50:\n    i = i + 1\nprint "detach output"\n', encoding="utf-8")
+        outputs: list[str] = []
+        actions = iter(["detach"])
+
+        try:
+            with patch("sys.stdin.isatty", return_value=True):
+                with patch.object(shell, "_poll_foreground_job_action", side_effect=lambda: next(actions, None)):
+                    with patch(
+                        "builtins.print",
+                        side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                    ):
+                        shell.onecmd("run fg_detach_test.peb")
+                        shell.onecmd("jobs")
+                        shell.onecmd("fg 1")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertIn("[1] background", outputs)
+        self.assertTrue(any("[1] " in line and "run /fg_detach_test.peb" in line for line in outputs))
+        self.assertIn("detach output", outputs)
+
+    def test_two_foreground_programs_can_detach_and_continue_in_background(self) -> None:
+        shell = build_shell()
+        first = shell.fs.resolve_path("fg_one.peb")
+        second = shell.fs.resolve_path("fg_two.peb")
+        first.write_text('i = 0\nwhile i < 80:\n    i = i + 1\nprint "one done"\n', encoding="utf-8")
+        second.write_text('i = 0\nwhile i < 80:\n    i = i + 1\nprint "two done"\n', encoding="utf-8")
+        outputs: list[str] = []
+        actions = iter(["detach", "detach"])
+
+        try:
+            with patch("sys.stdin.isatty", return_value=True):
+                with patch.object(shell, "_poll_foreground_job_action", side_effect=lambda: next(actions, None)):
+                    with patch(
+                        "builtins.print",
+                        side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                    ):
+                        shell.onecmd("run fg_one.peb")
+                        shell.onecmd("run fg_two.peb")
+                        shell.onecmd("jobs")
+                        shell.onecmd("fg 1")
+                        shell.onecmd("fg 2")
+        finally:
+            if first.exists():
+                first.unlink()
+            if second.exists():
+                second.unlink()
+
+        self.assertIn("[1] background", outputs)
+        self.assertIn("[2] background", outputs)
+        self.assertTrue(any("[1] " in line and "run /fg_one.peb" in line for line in outputs))
+        self.assertTrue(any("[2] " in line and "run /fg_two.peb" in line for line in outputs))
+        self.assertIn("one done", outputs)
+        self.assertIn("two done", outputs)
+
+    def test_foreground_vm_task_owns_terminal_while_attached(self) -> None:
+        shell = build_shell()
+        task_id = shell._create_vm_task("system/clock_tick.peb", [], "run")
+        outputs: list[str] = []
+        keys = iter(["q"])
+
+        try:
+            with patch.object(shell, "_poll_foreground_job_action", return_value=None):
+                with patch.object(shell, "_read_terminal_key", side_effect=lambda line, timeout: next(keys, "")):
+                    with patch(
+                        "builtins.print",
+                        side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                    ):
+                        shell._attach_foreground_vm_task(task_id)
+        finally:
+            with shell._vm_lock:
+                shell._vm_tasks.pop(task_id, None)
+
+        self.assertTrue(any("CLOCK TICK" in line for line in outputs))
 
     def test_background_jobs_reject_interactive_programs(self) -> None:
         shell = build_shell()
@@ -1133,6 +1425,39 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         )
 
         self.assertIn("[runtime] user filesystem: Pebble memory filesystem", outputs)
+
+    def test_runtime_scheduler_can_spawn_step_snapshot_and_restore_vm_tasks(self) -> None:
+        shell = build_shell()
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        outputs = PebbleInterpreter(
+            shell.fs.root,
+            path_resolver=shell._resolve_user_path_to_host,
+            host_functions=shell._make_runtime(consume_output=False).host_functions,
+        ).execute(
+            runtime_source
+            + "\n"
+            + "\n".join(
+                [
+                    "scheduler_new()",
+                    'source = "x = 0\\nwhile x < 3:\\n    x = x + 1\\n    print x"',
+                    'task = scheduler_spawn_source("demo", source, [])',
+                    "print scheduler_step_ready(5)",
+                    "print scheduler_take_output(task)",
+                    "snap = scheduler_snapshot_task(task)",
+                    'copy = scheduler_restore_snapshot(snap, "demo-copy")',
+                    "print scheduler_step_task(copy, 10)",
+                    "print scheduler_take_output(copy)",
+                ]
+            ),
+            initial_globals={
+                "FS_MODE": "hostfs",
+                "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                "SYSTEM_SHELL_PATH": "system/shell.peb",
+                "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+            },
+        )
+
+        self.assertEqual(outputs, ["5", "[1]", "7", "[2, 3]"])
 
 
 

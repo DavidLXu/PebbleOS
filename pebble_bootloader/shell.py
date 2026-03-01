@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import cmd
 import os
+import queue
 import select
 import shutil
 import shlex
-import signal
+import time
 import sys
 import termios
 import threading
@@ -30,9 +31,24 @@ class BackgroundJob:
     exec_mode: str
     cwd: str
     outputs: list[str] = field(default_factory=list)
+    consumed_outputs: int = 0
     status: str = "running"
     error: str | None = None
     thread: threading.Thread | None = None
+
+
+@dataclass
+class VMTask:
+    task_id: int
+    command: str
+    program: str
+    argv: list[str]
+    cwd: str
+    interpreter: PebbleBytecodeInterpreter
+    outputs_consumed: int = 0
+    status: str = "ready"
+    error: str | None = None
+    attached: bool = False
 
 
 class PebbleShell(cmd.Cmd):
@@ -54,8 +70,18 @@ class PebbleShell(cmd.Cmd):
         self._jobs: dict[int, BackgroundJob] = {}
         self._jobs_lock = threading.Lock()
         self._next_job_id = 1
+        self._vm_tasks: dict[int, VMTask] = {}
+        self._vm_lock = threading.Lock()
+        self._vm_snapshots: dict[int, dict[str, object]] = {}
+        self._next_vm_snapshot_id = 1
+        self._detach_requested = threading.Event()
+        self._main_thread_id = threading.get_ident()
+        self._terminal_owner_thread_id: int | None = None
+        self._shell_terminal_settings = self._capture_terminal_settings()
         self.fs.mount("system", Path(__file__).resolve().parent.parent / "pebble_system")
         self._refresh_shell_state()
+        self._vm_scheduler = threading.Thread(target=self._vm_scheduler_loop, name="pebble-vm-scheduler", daemon=True)
+        self._vm_scheduler.start()
 
     def do_help(self, arg: str) -> None:
         self._dispatch_runtime_command("help", arg)
@@ -66,6 +92,52 @@ class PebbleShell(cmd.Cmd):
     def do_EOF(self, arg: str) -> bool:
         print()
         return self.do_exit(arg)
+
+    def cmdloop(self, intro: str | None = None) -> None:
+        if intro is not None:
+            self.intro = intro
+        self.preloop()
+        old_completer = None
+        readline_ready = False
+        if self.use_rawinput and getattr(self, "completekey", None):
+            try:
+                import readline
+
+                old_completer = readline.get_completer()
+                readline.set_completer(self.complete)
+                readline.parse_and_bind(self.completekey + ": complete")
+                readline_ready = True
+            except ImportError:
+                readline_ready = False
+        try:
+            if self.intro:
+                for line in str(self.intro).splitlines():
+                    self._emit_runtime_output(line)
+            stop = False
+            while not stop:
+                try:
+                    line = input("\r" + self.prompt)
+                except EOFError:
+                    line = "EOF"
+                except KeyboardInterrupt:
+                    self._restore_shell_terminal()
+                    self._reset_to_prompt_line()
+                    print("^C", flush=True)
+                    continue
+                line = self.precmd(line)
+                stop = bool(self.onecmd(line))
+                stop = self.postcmd(stop, line)
+            self.postloop()
+        finally:
+            if readline_ready:
+                try:
+                    import readline
+
+                    readline.set_completer(old_completer)
+                except ImportError:
+                    pass
+            self._terminal_owner_thread_id = None
+            self._restore_shell_terminal()
 
     def completenames(self, text: str, *ignored) -> list[str]:
         commands = [
@@ -234,6 +306,8 @@ class PebbleShell(cmd.Cmd):
         prefix = text or ""
         with self._jobs_lock:
             ids = sorted(self._jobs)
+        with self._vm_lock:
+            ids.extend(sorted(self._vm_tasks))
         return [str(job_id) for job_id in ids if str(job_id).startswith(prefix)]
 
     def _refresh_shell_state(self) -> None:
@@ -293,7 +367,7 @@ class PebbleShell(cmd.Cmd):
     def _make_runtime(self, consume_output: bool) -> PebbleInterpreter:
         consumer = None
         if consume_output:
-            consumer = lambda text: print(text, flush=True)
+            consumer = self._emit_runtime_output
         return PebbleInterpreter(
             self.fs.root,
             input_provider=input,
@@ -328,6 +402,13 @@ class PebbleShell(cmd.Cmd):
                 "start_background_job": self._host_start_background_job,
                 "list_background_jobs": self._host_list_background_jobs,
                 "foreground_job": self._host_foreground_job,
+                "vm_create_task": self._host_vm_create_task,
+                "vm_step_task": self._host_vm_step_task,
+                "vm_task_status": self._host_vm_task_status,
+                "vm_take_task_output": self._host_vm_take_task_output,
+                "vm_snapshot_task": self._host_vm_snapshot_task,
+                "vm_restore_task": self._host_vm_restore_task,
+                "vm_drop_task": self._host_vm_drop_task,
                 "cwd": self._host_cwd,
                 "chdir": self._host_chdir,
                 "filesystem_file_count": self._host_filesystem_file_count,
@@ -639,6 +720,143 @@ class PebbleShell(cmd.Cmd):
         except (FileSystemError, PebbleError) as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
 
+    def _host_vm_create_task(self, args: list[object], line_number: int) -> int:
+        if len(args) != 2:
+            raise PebbleError(f"line {line_number}: vm_create_task() expected 2 arguments but got {len(args)}")
+        if not isinstance(args[0], str):
+            raise PebbleError(f"line {line_number}: vm_create_task() expects source text as the first argument")
+        argv = args[1]
+        if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
+            raise PebbleError(f"line {line_number}: vm_create_task() expects a list of string arguments")
+        runtime = self._make_runtime(consume_output=False)
+        interpreter = PebbleBytecodeInterpreter(
+            self.fs.root,
+            input_provider=lambda prompt="": (_ for _ in ()).throw(
+                PebbleError("input() is not available in scheduler-driven bytecode tasks")
+            ),
+            output_consumer=None,
+            path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, self.cwd)),
+            host_functions=runtime.host_functions,
+        )
+        initial_globals = {
+            "ARGV": list(argv),
+            "ARGC": len(argv),
+            "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+            "FS_MODE": self.fs_mode,
+            "CWD": self.cwd,
+        }
+        try:
+            interpreter.prepare(args[0], initial_globals=initial_globals)
+        except (FileSystemError, PebbleError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+        task_id = self._next_job_id
+        self._next_job_id = self._next_job_id + 1
+        with self._vm_lock:
+            self._vm_tasks[task_id] = VMTask(
+                task_id=task_id,
+                command="vm",
+                program="<source>",
+                argv=list(argv),
+                cwd=self.cwd,
+                interpreter=interpreter,
+            )
+        return task_id
+
+    def _host_vm_step_task(self, args: list[object], line_number: int) -> int:
+        if len(args) != 2 or not isinstance(args[0], int) or not isinstance(args[1], int):
+            raise PebbleError(f"line {line_number}: vm_step_task() expects task id and step count integers")
+        with self._vm_lock:
+            task = self._vm_tasks.get(args[0])
+        if task is None:
+            raise PebbleError(f"line {line_number}: vm task {args[0]} does not exist")
+        if args[1] < 0:
+            raise PebbleError(f"line {line_number}: vm_step_task() step count cannot be negative")
+        if task.status in {"halted", "error"}:
+            return 0
+        try:
+            task.status = "running"
+            count = task.interpreter.run_steps(args[1])
+            task.status = "halted" if task.interpreter.vm_state.halted else "ready"
+            return count
+        except PebbleError as exc:
+            task.status = "error"
+            task.error = str(exc)
+            return 0
+
+    def _host_vm_task_status(self, args: list[object], line_number: int) -> str:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: vm_task_status() expects one integer task id")
+        with self._vm_lock:
+            task = self._vm_tasks.get(args[0])
+        if task is None:
+            raise PebbleError(f"line {line_number}: vm task {args[0]} does not exist")
+        if task.status == "error" and task.error is not None:
+            return "error: " + task.error
+        return task.status
+
+    def _host_vm_take_task_output(self, args: list[object], line_number: int) -> list[str]:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: vm_take_task_output() expects one integer task id")
+        with self._vm_lock:
+            task = self._vm_tasks.get(args[0])
+        if task is None:
+            raise PebbleError(f"line {line_number}: vm task {args[0]} does not exist")
+        outputs = list(task.interpreter.output[task.outputs_consumed :])
+        task.outputs_consumed = len(task.interpreter.output)
+        return outputs
+
+    def _host_vm_snapshot_task(self, args: list[object], line_number: int) -> int:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: vm_snapshot_task() expects one integer task id")
+        with self._vm_lock:
+            task = self._vm_tasks.get(args[0])
+        if task is None:
+            raise PebbleError(f"line {line_number}: vm task {args[0]} does not exist")
+        snapshot_id = self._next_vm_snapshot_id
+        self._next_vm_snapshot_id = self._next_vm_snapshot_id + 1
+        self._vm_snapshots[snapshot_id] = task.interpreter.snapshot()
+        return snapshot_id
+
+    def _host_vm_restore_task(self, args: list[object], line_number: int) -> int:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: vm_restore_task() expects one integer snapshot id")
+        snapshot = self._vm_snapshots.get(args[0])
+        if snapshot is None:
+            raise PebbleError(f"line {line_number}: vm snapshot {args[0]} does not exist")
+        runtime = self._make_runtime(consume_output=False)
+        interpreter = PebbleBytecodeInterpreter(
+            self.fs.root,
+            input_provider=lambda prompt="": (_ for _ in ()).throw(
+                PebbleError("input() is not available in scheduler-driven bytecode tasks")
+            ),
+            output_consumer=None,
+            path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, self.cwd)),
+            host_functions=runtime.host_functions,
+        )
+        interpreter.restore(snapshot)
+        task_id = self._next_job_id
+        self._next_job_id = self._next_job_id + 1
+        with self._vm_lock:
+            self._vm_tasks[task_id] = VMTask(
+                task_id=task_id,
+                command="vm",
+                program="<restored>",
+                argv=[],
+                cwd=self.cwd,
+                interpreter=interpreter,
+                outputs_consumed=len(interpreter.output),
+                status="halted" if interpreter.vm_state.halted else "ready",
+            )
+        return task_id
+
+    def _host_vm_drop_task(self, args: list[object], line_number: int) -> int:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: vm_drop_task() expects one integer task id")
+        with self._vm_lock:
+            if self._vm_tasks.pop(args[0], None) is None:
+                raise PebbleError(f"line {line_number}: vm task {args[0]} does not exist")
+        return 0
+
     def _host_cwd(self, args: list[object], line_number: int) -> str:
         if args:
             raise PebbleError(f"line {line_number}: cwd() expected 0 arguments but got {len(args)}")
@@ -733,12 +951,13 @@ class PebbleShell(cmd.Cmd):
         return self._read_terminal_key(line_number, timeout_ms / 1000.0)
 
     def _read_terminal_key(self, line_number: int, timeout_seconds: float | None) -> str:
+        if not self._terminal_access_allowed():
+            return ""
         if not sys.stdin.isatty():
             raise PebbleError(f"line {line_number}: term_read_key() requires an interactive terminal")
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         interrupt_requested = False
-        suspend_requested = False
         timed_out = False
         result = ""
         try:
@@ -759,7 +978,8 @@ class PebbleShell(cmd.Cmd):
                         if second == "O":
                             third = sys.stdin.read(1)
                             if third == "P":
-                                suspend_requested = True
+                                self._detach_requested.set()
+                                result = ""
                             else:
                                 result = "ESC"
                         elif second == "[":
@@ -767,7 +987,8 @@ class PebbleShell(cmd.Cmd):
                             if third == "[":
                                 fourth = sys.stdin.read(1)
                                 if fourth == "A":
-                                    suspend_requested = True
+                                    self._detach_requested.set()
+                                    result = ""
                                 else:
                                     result = "ESC"
                             elif third == "A":
@@ -800,7 +1021,8 @@ class PebbleShell(cmd.Cmd):
                 elif first == "\x03":
                     interrupt_requested = True
                 elif first == "\x1a":
-                    suspend_requested = True
+                    self._detach_requested.set()
+                    result = ""
                 elif first in {"\r", "\n"}:
                     result = "ENTER"
                 elif first == "\x7f":
@@ -815,14 +1037,43 @@ class PebbleShell(cmd.Cmd):
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         if interrupt_requested:
             raise KeyboardInterrupt
-        if suspend_requested:
-            self._suspend_process()
-            return self._read_terminal_key(line_number, timeout_seconds)
         return result
 
-    def _suspend_process(self) -> None:
-        print("\n[system] suspended; use 'fg' in the host shell to resume", flush=True)
-        os.kill(os.getpid(), signal.SIGTSTP)
+    def _terminal_access_allowed(self) -> bool:
+        current = threading.get_ident()
+        owner = self._terminal_owner_thread_id
+        if owner is not None:
+            return current == owner
+        return current == self._main_thread_id
+
+    def _capture_terminal_settings(self):
+        if not sys.stdin.isatty():
+            return None
+        try:
+            return termios.tcgetattr(sys.stdin.fileno())
+        except termios.error:
+            return None
+
+    def _restore_shell_terminal(self) -> None:
+        if self._shell_terminal_settings is None or not sys.stdin.isatty():
+            return
+        try:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._shell_terminal_settings)
+        except termios.error:
+            return
+
+    def _emit_runtime_output(self, text: str) -> None:
+        if sys.stdout.isatty():
+            sys.stdout.write(text + "\r\n")
+            sys.stdout.flush()
+            return
+        print(text, flush=True)
+
+    def _reset_to_prompt_line(self) -> None:
+        if not sys.stdout.isatty():
+            return
+        sys.stdout.write("\r\n")
+        sys.stdout.flush()
 
     def _host_term_rows(self, args: list[object], line_number: int) -> int:
         if args:
@@ -843,19 +1094,140 @@ class PebbleShell(cmd.Cmd):
         message = self._require_string_arg("runtime_error", args, line_number, 1)
         raise PebbleError(f"line {line_number}: {message}")
 
-    def _run_program(self, name: str, extra_args: list[str], exec_mode: str = "interp", cwd: str | None = None) -> None:
-        _, output, error = self._execute_program(name, extra_args, exec_mode=exec_mode, cwd=cwd)
-        if error is not None:
-            if error == "__interrupt__":
+    def _create_vm_task(self, name: str, extra_args: list[str], command_name: str, cwd: str | None = None) -> int:
+        cwd_value = self.cwd if cwd is None else cwd
+        program = self._normalize_user_path(name, cwd_value)
+        runtime_source = self.fs.read_file("system/runtime.peb")
+        source = runtime_source + "\n" + self.fs.read_file(program.lstrip("/"))
+        runtime = self._make_runtime(consume_output=False)
+        interpreter = PebbleBytecodeInterpreter(
+            self.fs.root,
+            input_provider=lambda prompt="": (_ for _ in ()).throw(
+                PebbleError("input() is not available in scheduler-driven bytecode tasks")
+            ),
+            output_consumer=None,
+            path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, cwd_value)),
+            host_functions=runtime.host_functions,
+        )
+        initial_globals = {
+            "ARGV": list(extra_args),
+            "ARGC": len(extra_args),
+            "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+            "FS_MODE": self.fs_mode,
+            "CWD": cwd_value,
+        }
+        interpreter.prepare(source, initial_globals=initial_globals)
+        with self._vm_lock:
+            task_id = self._next_job_id
+            self._next_job_id = self._next_job_id + 1
+            self._vm_tasks[task_id] = VMTask(
+                task_id=task_id,
+                command=command_name + " " + program,
+                program=program,
+                argv=list(extra_args),
+                cwd=cwd_value,
+                interpreter=interpreter,
+            )
+        return task_id
+
+    def _vm_scheduler_loop(self) -> None:
+        while True:
+            time.sleep(0.01)
+            with self._vm_lock:
+                tasks = [self._vm_tasks[key] for key in sorted(self._vm_tasks)]
+            for task in tasks:
+                if task.status in {"halted", "error"} or task.attached:
+                    continue
+                try:
+                    task.status = "running"
+                    task.interpreter.run_steps(10)
+                    task.status = "halted" if task.interpreter.vm_state.halted else "ready"
+                except PebbleError as exc:
+                    task.status = "error"
+                    task.error = str(exc)
+
+    def _attach_foreground_vm_task(self, task_id: int) -> bool:
+        with self._vm_lock:
+            task = self._vm_tasks.get(task_id)
+        if task is None:
+            raise PebbleError(f"job {task_id} does not exist")
+        task.attached = True
+        self._terminal_owner_thread_id = self._main_thread_id
+        while True:
+            if task.status not in {"halted", "error"}:
+                try:
+                    task.status = "running"
+                    task.interpreter.run_steps(5)
+                    task.status = "halted" if task.interpreter.vm_state.halted else "ready"
+                except PebbleError as exc:
+                    task.status = "error"
+                    task.error = str(exc)
+            self._emit_new_vm_output(task)
+            if task.status in {"halted", "error"}:
+                task.attached = False
+                self._terminal_owner_thread_id = None
+                self._emit_new_vm_output(task)
+                with self._vm_lock:
+                    self._vm_tasks.pop(task_id, None)
+                if task.error is not None:
+                    raise PebbleError(task.error)
+                if task.outputs_consumed == 0:
+                    print("(no output)")
+                return False
+            action = self._poll_foreground_job_action()
+            if action == "interrupt":
+                task.attached = False
+                self._terminal_owner_thread_id = None
+                with self._vm_lock:
+                    self._vm_tasks.pop(task_id, None)
                 print("^C")
                 print("[system] program interrupted", flush=True)
+                return False
+            if action == "detach":
+                task.attached = False
+                self._terminal_owner_thread_id = None
+                return True
+            time.sleep(0.02)
+
+    def _emit_new_vm_output(self, task: VMTask) -> None:
+        while task.outputs_consumed < len(task.interpreter.output):
+            self._emit_runtime_output(task.interpreter.output[task.outputs_consumed])
+            task.outputs_consumed = task.outputs_consumed + 1
+
+    def _run_program(self, name: str, extra_args: list[str], exec_mode: str = "interp", cwd: str | None = None) -> None:
+        if name in {"nano.peb", "system/nano.peb"} or not sys.stdin.isatty():
+            _, output, error = self._execute_program(name, extra_args, exec_mode=exec_mode, cwd=cwd)
+            if error is not None:
+                if error == "__interrupt__":
+                    print("^C")
+                    print("[system] program interrupted", flush=True)
+                    return
+                raise PebbleError(error)
+            if not output:
                 return
-            raise PebbleError(error)
-        if not output:
-            interactive_program = name in {"nano.peb", "system/nano.peb"}
-            if not interactive_program:
-                print("(no output)")
             return
+        try:
+            job_id = self._create_vm_task(name, extra_args, "exec" if exec_mode == "bytecode" else "run", cwd=cwd)
+        except (FileSystemError, PebbleError):
+            job_id = self._start_background_job(
+                name,
+                extra_args,
+                exec_mode,
+                command_name="exec" if exec_mode == "bytecode" else "run",
+            )
+            self._detach_requested.clear()
+            detached = self._attach_foreground_job(job_id)
+            self._restore_shell_terminal()
+            self._reset_to_prompt_line()
+            if detached:
+                print(f"[{job_id}] background", flush=True)
+            return
+        self._detach_requested.clear()
+        detached = self._attach_foreground_vm_task(job_id)
+        self._restore_shell_terminal()
+        self._reset_to_prompt_line()
+        if detached:
+            print(f"[{job_id}] background", flush=True)
 
     def _execute_program(
         self,
@@ -882,7 +1254,7 @@ class PebbleShell(cmd.Cmd):
             interpreter = PebbleBytecodeInterpreter(
                 self.fs.root,
                 input_provider=provider,
-                output_consumer=output_consumer or (lambda text: print(text, flush=True)),
+                output_consumer=output_consumer or self._emit_runtime_output,
                 path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, cwd_value)),
                 host_functions=self._make_runtime(consume_output=False).host_functions,
             )
@@ -890,7 +1262,7 @@ class PebbleShell(cmd.Cmd):
             interpreter = PebbleInterpreter(
                 self.fs.root,
                 input_provider=provider,
-                output_consumer=output_consumer or (lambda text: print(text, flush=True)),
+                output_consumer=output_consumer or self._emit_runtime_output,
                 path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, cwd_value)),
                 host_functions=self._make_runtime(consume_output=False).host_functions,
             )
@@ -913,7 +1285,13 @@ class PebbleShell(cmd.Cmd):
             return interactive_program, [], str(exc)
         return interactive_program, output, None
 
-    def _start_background_job(self, name: str, extra_args: list[str], exec_mode: str) -> int:
+    def _start_background_job(
+        self,
+        name: str,
+        extra_args: list[str],
+        exec_mode: str,
+        command_name: str | None = None,
+    ) -> int:
         if name in {"nano.peb", "system/nano.peb"}:
             raise PebbleError("interactive programs cannot run in the background")
         program = self._normalize_user_path(name)
@@ -923,7 +1301,7 @@ class PebbleShell(cmd.Cmd):
             self._next_job_id = self._next_job_id + 1
             job = BackgroundJob(
                 job_id=job_id,
-                command=("execbg" if exec_mode == "bytecode" else "runbg") + " " + program,
+                command=(command_name or ("execbg" if exec_mode == "bytecode" else "runbg")) + " " + program,
                 program=program,
                 argv=list(extra_args),
                 exec_mode=exec_mode,
@@ -961,9 +1339,77 @@ class PebbleShell(cmd.Cmd):
         thread.start()
         return job_id
 
+    def _attach_foreground_job(self, job_id: int) -> bool:
+        with self._jobs_lock:
+            job = self._jobs.get(job_id)
+        if job is None:
+            raise PebbleError(f"job {job_id} does not exist")
+        self._terminal_owner_thread_id = job.thread.ident if job.thread is not None else None
+        while True:
+            self._emit_new_job_output(job)
+            if job.thread is not None and not job.thread.is_alive():
+                self._terminal_owner_thread_id = None
+                self._emit_new_job_output(job)
+                with self._jobs_lock:
+                    self._jobs.pop(job_id, None)
+                if job.error is not None:
+                    if job.error == "__interrupt__":
+                        print("^C")
+                        print("[system] program interrupted", flush=True)
+                        return False
+                    raise PebbleError(job.error)
+                if job.consumed_outputs == 0:
+                    print("(no output)")
+                return False
+            action = self._poll_foreground_job_action()
+            if action == "interrupt":
+                self._terminal_owner_thread_id = None
+                return False
+            if action == "detach":
+                self._terminal_owner_thread_id = None
+                return True
+            if job.thread is not None:
+                if job.thread.ident is not None:
+                    self._terminal_owner_thread_id = job.thread.ident
+                job.thread.join(0.05)
+
+    def _emit_new_job_output(self, job: BackgroundJob) -> None:
+        while job.consumed_outputs < len(job.outputs):
+            self._emit_runtime_output(job.outputs[job.consumed_outputs])
+            job.consumed_outputs = job.consumed_outputs + 1
+
+    def _poll_foreground_job_action(self) -> str | None:
+        if self._detach_requested.is_set():
+            self._detach_requested.clear()
+            return "detach"
+        if not sys.stdin.isatty():
+            return None
+        fd = sys.stdin.fileno()
+        try:
+            old_settings = termios.tcgetattr(fd)
+        except termios.error:
+            return None
+        try:
+            tty.setraw(fd)
+            ready, _, _ = select.select([sys.stdin], [], [], 0)
+            if not ready:
+                return None
+            first = sys.stdin.read(1)
+            if first != "\x1b":
+                return None
+            ready, _, _ = select.select([sys.stdin], [], [], 0.03)
+            if not ready:
+                return None
+            second = sys.stdin.read(1)
+            return None
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
     def _list_background_jobs(self) -> list[str]:
         with self._jobs_lock:
             jobs = [self._jobs[key] for key in sorted(self._jobs)]
+        with self._vm_lock:
+            vm_tasks = [self._vm_tasks[key] for key in sorted(self._vm_tasks)]
         lines: list[str] = []
         for job in jobs:
             status = job.status
@@ -971,9 +1417,26 @@ class PebbleShell(cmd.Cmd):
                 status = "done"
                 job.status = "done"
             lines.append(f"[{job.job_id}] {status} {job.command}")
+        for task in vm_tasks:
+            status = task.status
+            if task.attached:
+                status = "foreground"
+            elif status == "ready":
+                status = "running"
+            lines.append(f"[{task.task_id}] {status} {task.command}")
         return lines
 
     def _foreground_job(self, job_id: int) -> list[str]:
+        with self._vm_lock:
+            vm_task = self._vm_tasks.get(job_id)
+        if vm_task is not None:
+            self._detach_requested.clear()
+            detached = self._attach_foreground_vm_task(job_id)
+            self._restore_shell_terminal()
+            self._reset_to_prompt_line()
+            if detached:
+                return [f"[{job_id}] background"]
+            return []
         with self._jobs_lock:
             job = self._jobs.get(job_id)
         if job is None:
@@ -982,7 +1445,8 @@ class PebbleShell(cmd.Cmd):
             job.thread.join()
         with self._jobs_lock:
             self._jobs.pop(job_id, None)
-        lines = list(job.outputs)
+        lines = list(job.outputs[job.consumed_outputs :])
+        job.consumed_outputs = len(job.outputs)
         if job.error is not None:
             lines.append(job.error)
         if len(lines) == 0 and job.status == "done":

@@ -286,9 +286,27 @@ class VMFrame:
 
 
 @dataclass
+class VMCodeFrame:
+    name: str
+    code: list[tuple]
+    pc: int
+    locals: dict[str, "Value"] | None
+    line_number: int
+    kind: str = "block"
+    condition_code: list[tuple] | None = None
+    body_code: list[tuple] | None = None
+    loop_name: str | None = None
+    loop_values: list["Value"] | None = None
+    loop_index: int = 0
+
+
+@dataclass
 class VMState:
     value_stack: list["Value"]
     frame_stack: list[VMFrame]
+    code_stack: list[VMCodeFrame]
+    halted: bool = False
+    pending_signal: str | None = None
 
 
 class ReturnSignal(Exception):
@@ -1298,10 +1316,15 @@ class PebbleInterpreter:
                     "clear": "memory_clear",
                     "fill": "memory_fill",
                     "copy": "memory_copy",
+                    "move": "memory_move",
                     "slice": "memory_slice",
                     "store": "memory_store",
+                    "zero": "memory_zero",
+                    "compare": "memory_compare",
                     "dump": "memory_dump",
                     "alloc": "memory_alloc",
+                    "mark": "memory_mark",
+                    "reset": "memory_reset",
                     "top": "memory_top",
                 },
                 {},
@@ -1324,6 +1347,8 @@ class PebbleInterpreter:
                     "write": "heap_write",
                     "store": "heap_store",
                     "slice": "heap_slice",
+                    "mark": "heap_mark",
+                    "reset": "heap_reset",
                 },
                 {},
                 {},
@@ -1506,24 +1531,323 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
     """Compiles Pebble source to a compact instruction form, then executes it."""
 
     def execute(self, source: str, initial_globals: dict[str, Value] | None = None) -> list[str]:
+        self.prepare(source, initial_globals)
+        self.run_until_complete()
+        return self.output
+
+    def prepare(self, source: str, initial_globals: dict[str, Value] | None = None) -> None:
         statements = Parser(source).parse()
         code = BytecodeCompiler().compile(statements)
         self.output = []
-        self.globals = {}
-        self.functions: dict[str, BytecodeFunction] = {}
-        self.module_cache: dict[str, ModuleObject] = {}
-        self.module_loading: set[str] = set()
-        self.vm_state = VMState(value_stack=[], frame_stack=[])
+        self.globals = {
+            "CWD": "/",
+            "FS_MODE": "hostfs",
+            "MFS_READY": 0,
+            "MFS_DB": {"files": {}},
+        }
+        self.functions = {}
+        self.module_cache = {}
+        self.module_loading = set()
+        self.vm_state = VMState(value_stack=[], frame_stack=[], code_stack=[], halted=False, pending_signal=None)
         self.fs_root.mkdir(parents=True, exist_ok=True)
         if initial_globals:
             for name, value in initial_globals.items():
                 self.globals[name] = self._clone_value(value)
-        self._execute_code(code, local_env=None)
+        self.vm_state.code_stack.append(
+            VMCodeFrame(name="<main>", code=code, pc=0, locals=None, line_number=1, kind="block")
+        )
+
+    def step(self) -> bool:
+        if self.vm_state.halted:
+            return False
+        while self.vm_state.code_stack:
+            frame = self.vm_state.code_stack[-1]
+            if frame.kind == "while":
+                self._step_while_frame(frame)
+            elif frame.kind == "for":
+                self._step_for_frame(frame)
+            else:
+                if frame.pc >= len(frame.code):
+                    self.vm_state.code_stack.pop()
+                    self._consume_pending_signal()
+                    continue
+                instr = frame.code[frame.pc]
+                frame.pc = frame.pc + 1
+                self._execute_step_instr(instr, frame.locals)
+            self._consume_pending_signal()
+            if not self.vm_state.code_stack:
+                self.vm_state.halted = True
+                return False
+            return True
+        self.vm_state.halted = True
+        return False
+
+    def run_steps(self, limit: int) -> int:
+        count = 0
+        while count < limit and self.step():
+            count = count + 1
+        return count
+
+    def run_until_complete(self) -> list[str]:
+        while self.step():
+            pass
         return self.output
+
+    def snapshot(self) -> dict[str, object]:
+        env_map: dict[int, dict[str, Value] | None] = {}
+        code_stack: list[VMCodeFrame] = []
+        frame_stack: list[VMFrame] = []
+        for frame in self.vm_state.code_stack:
+            code_stack.append(
+                VMCodeFrame(
+                    name=frame.name,
+                    code=frame.code,
+                    pc=frame.pc,
+                    locals=self._clone_env_reference(frame.locals, env_map),
+                    line_number=frame.line_number,
+                    kind=frame.kind,
+                    condition_code=frame.condition_code,
+                    body_code=frame.body_code,
+                    loop_name=frame.loop_name,
+                    loop_values=self._clone_list(frame.loop_values) if frame.loop_values is not None else None,
+                    loop_index=frame.loop_index,
+                )
+            )
+        for frame in self.vm_state.frame_stack:
+            frame_stack.append(
+                VMFrame(
+                    name=frame.name,
+                    locals=self._clone_env_reference(frame.locals, env_map) or {},
+                    line_number=frame.line_number,
+                )
+            )
+        return {
+            "output": list(self.output),
+            "globals": {name: self._clone_value(value) for name, value in self.globals.items()},
+            "functions": dict(self.functions),
+            "module_cache": dict(self.module_cache),
+            "module_loading": set(self.module_loading),
+            "vm_state": VMState(
+                value_stack=self._clone_list(self.vm_state.value_stack),
+                frame_stack=frame_stack,
+                code_stack=code_stack,
+                halted=self.vm_state.halted,
+                pending_signal=self.vm_state.pending_signal,
+            ),
+        }
+
+    def restore(self, snapshot: dict[str, object]) -> None:
+        self.output = list(snapshot["output"])
+        self.globals = {name: self._clone_value(value) for name, value in snapshot["globals"].items()}
+        self.functions = dict(snapshot["functions"])
+        self.module_cache = dict(snapshot["module_cache"])
+        self.module_loading = set(snapshot["module_loading"])
+        saved_state = snapshot["vm_state"]
+        env_map: dict[int, dict[str, Value] | None] = {}
+        code_stack: list[VMCodeFrame] = []
+        frame_stack: list[VMFrame] = []
+        for frame in saved_state.code_stack:
+            code_stack.append(
+                VMCodeFrame(
+                    name=frame.name,
+                    code=frame.code,
+                    pc=frame.pc,
+                    locals=self._clone_env_reference(frame.locals, env_map),
+                    line_number=frame.line_number,
+                    kind=frame.kind,
+                    condition_code=frame.condition_code,
+                    body_code=frame.body_code,
+                    loop_name=frame.loop_name,
+                    loop_values=self._clone_list(frame.loop_values) if frame.loop_values is not None else None,
+                    loop_index=frame.loop_index,
+                )
+            )
+        for frame in saved_state.frame_stack:
+            frame_stack.append(
+                VMFrame(
+                    name=frame.name,
+                    locals=self._clone_env_reference(frame.locals, env_map) or {},
+                    line_number=frame.line_number,
+                )
+            )
+        self.vm_state = VMState(
+            value_stack=self._clone_list(saved_state.value_stack),
+            frame_stack=frame_stack,
+            code_stack=code_stack,
+            halted=saved_state.halted,
+            pending_signal=saved_state.pending_signal,
+        )
 
     def _execute_code(self, code: list[tuple], local_env: dict[str, Value] | None) -> None:
         for instr in code:
             self._execute_instr(instr, local_env)
+
+    def _clone_env_reference(
+        self,
+        local_env: dict[str, Value] | None,
+        env_map: dict[int, dict[str, Value] | None],
+    ) -> dict[str, Value] | None:
+        if local_env is None:
+            return None
+        key = id(local_env)
+        cached = env_map.get(key)
+        if cached is not None:
+            return cached
+        cloned = {name: self._clone_value(value) for name, value in local_env.items()}
+        env_map[key] = cloned
+        return cloned
+
+    def _execute_step_instr(self, instr: tuple, local_env: dict[str, Value] | None) -> None:
+        op = instr[0]
+        if op == "ASSIGN":
+            self._assign_compiled_target(instr[1], self._eval_compiled_expr(instr[2], local_env), local_env)
+            return
+        if op == "PRINT":
+            self._emit_output(self._stringify(self._eval_compiled_expr(instr[1], local_env)))
+            return
+        if op == "EXPR":
+            self._eval_compiled_expr(instr[1], local_env)
+            return
+        if op == "PASS":
+            return
+        if op == "BREAK":
+            self.vm_state.pending_signal = "break"
+            return
+        if op == "CONTINUE":
+            self.vm_state.pending_signal = "continue"
+            return
+        if op == "IF":
+            branches = instr[1]
+            else_code = instr[2]
+            for condition_code, body_code, line_number in branches:
+                if self._truthy(self._eval_compiled_expr(condition_code, local_env)):
+                    self.vm_state.code_stack.append(
+                        VMCodeFrame(
+                            name="<if>",
+                            code=body_code,
+                            pc=0,
+                            locals=local_env,
+                            line_number=line_number,
+                            kind="block",
+                        )
+                    )
+                    return
+            if else_code is not None:
+                self.vm_state.code_stack.append(
+                    VMCodeFrame(
+                        name="<else>",
+                        code=else_code,
+                        pc=0,
+                        locals=local_env,
+                        line_number=instr[3],
+                        kind="block",
+                    )
+                )
+            return
+        if op == "WHILE":
+            self.vm_state.code_stack.append(
+                VMCodeFrame(
+                    name="<while>",
+                    code=[],
+                    pc=0,
+                    locals=local_env,
+                    line_number=instr[3],
+                    kind="while",
+                    condition_code=instr[1],
+                    body_code=instr[2],
+                )
+            )
+            return
+        if op == "FOR":
+            iterable = self._eval_compiled_expr(instr[2], local_env)
+            if isinstance(iterable, dict):
+                iterable = list(iterable.keys())
+            elif isinstance(iterable, str):
+                iterable = [iterable[i] for i in range(len(iterable))]
+            if not isinstance(iterable, list):
+                raise PebbleError(f"line {instr[4]}: for loops must iterate over a list or range(...)")
+            self.vm_state.code_stack.append(
+                VMCodeFrame(
+                    name="<for>",
+                    code=[],
+                    pc=0,
+                    locals=local_env,
+                    line_number=instr[4],
+                    kind="for",
+                    body_code=instr[3],
+                    loop_name=instr[1],
+                    loop_values=[self._clone_value(value) for value in iterable],
+                    loop_index=0,
+                )
+            )
+            return
+        if op == "FUNCTION":
+            fn = instr[1]
+            self.functions[fn.name] = fn
+            return
+        if op == "RETURN":
+            if local_env is None:
+                raise PebbleError(f"line {instr[2]}: return is only allowed inside functions")
+            raise ReturnSignal(self._eval_compiled_expr(instr[1], local_env))
+        if op == "IMPORT":
+            self._write_variable(instr[1], self._import_module(instr[1], instr[2]), local_env)
+            return
+        raise PebbleError(f"line {instr[-1]}: unknown bytecode instruction '{op}'")
+
+    def _step_while_frame(self, frame: VMCodeFrame) -> None:
+        if frame.condition_code is None or frame.body_code is None:
+            raise PebbleError("invalid while frame state")
+        if self._truthy(self._eval_compiled_expr(frame.condition_code, frame.locals)):
+            self.vm_state.code_stack.append(
+                VMCodeFrame(
+                    name="<while-body>",
+                    code=frame.body_code,
+                    pc=0,
+                    locals=frame.locals,
+                    line_number=frame.line_number,
+                    kind="block",
+                )
+            )
+            return
+        self.vm_state.code_stack.pop()
+
+    def _step_for_frame(self, frame: VMCodeFrame) -> None:
+        if frame.body_code is None or frame.loop_name is None or frame.loop_values is None:
+            raise PebbleError("invalid for frame state")
+        if frame.loop_index >= len(frame.loop_values):
+            self.vm_state.code_stack.pop()
+            return
+        self._write_variable(frame.loop_name, frame.loop_values[frame.loop_index], frame.locals)
+        frame.loop_index = frame.loop_index + 1
+        self.vm_state.code_stack.append(
+            VMCodeFrame(
+                name="<for-body>",
+                code=frame.body_code,
+                pc=0,
+                locals=frame.locals,
+                line_number=frame.line_number,
+                kind="block",
+            )
+        )
+
+    def _consume_pending_signal(self) -> None:
+        signal = self.vm_state.pending_signal
+        if signal is None:
+            return
+        while self.vm_state.code_stack:
+            frame = self.vm_state.code_stack[-1]
+            if frame.kind == "block":
+                self.vm_state.code_stack.pop()
+                continue
+            if frame.kind in {"while", "for"}:
+                if signal == "break":
+                    self.vm_state.code_stack.pop()
+                self.vm_state.pending_signal = None
+                return
+            self.vm_state.code_stack.pop()
+        if signal == "break":
+            raise PebbleError("break outside loop")
+        raise PebbleError("continue outside loop")
 
     def _execute_instr(self, instr: tuple, local_env: dict[str, Value] | None) -> None:
         op = instr[0]

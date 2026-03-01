@@ -211,6 +211,7 @@ Pebble itself:
 - Pebble runtime now adds block memory operations, a Pebble-native `heap` allocator, and a more explicit bytecode VM frame/value stack model to move execution semantics further away from raw Python object management
 - the shell can read host local time through a small bridge and expose it as a runtime-managed `time` command
 - shell and filesystem timestamps now include seconds, and `run`/`exec` stream program output as it is produced instead of buffering until process exit
+- foreground programs now support terminal control shortcuts at the system level: `Ctrl-C` interrupts and returns to the shell, while `Ctrl-Z` detaches the job into the background without leaving the terminal in raw mode
 - Pebble terminal programs can poll input with a timeout, which gives Pebble a basic real-time game loop capability
 - the filesystem exposes per-file timestamps so `ls` can show a time for each file
 - Pebble OS supports both direct host files `hostfs` and Pebble-managed virtual filesystems `vfs` through a unified Pebble filesystem layer
