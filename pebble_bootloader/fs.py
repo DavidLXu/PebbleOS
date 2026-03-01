@@ -9,7 +9,7 @@ class FileSystemError(Exception):
 
 
 class FlatFileSystem:
-    """A filesystem where every file lives directly under one folder."""
+    """A filesystem rooted at one folder, with optional mounted subtrees."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -25,7 +25,7 @@ class FlatFileSystem:
         self.mounts[cleaned] = host_path.resolve()
 
     def list_files(self) -> list[str]:
-        names = [path.name for path in self.root.iterdir() if path.is_file()]
+        names = [path.relative_to(self.root).as_posix() for path in sorted(self.root.rglob("*")) if path.is_file()]
         for alias, host_root in self.mounts.items():
             for path in sorted(host_root.rglob("*")):
                 if path.is_file():
@@ -62,7 +62,7 @@ class FlatFileSystem:
         path = self.resolve_path(name)
         if not path.exists():
             raise FileSystemError(f"file '{name}' does not exist")
-        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d, %H:%M")
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d, %H:%M:%S")
 
     def resolve_path(self, name: str) -> Path:
         cleaned = name.strip()
@@ -73,18 +73,23 @@ class FlatFileSystem:
 
         if "/" in cleaned:
             mount_name, remainder = cleaned.split("/", 1)
-            if mount_name not in self.mounts:
-                raise FileSystemError(
-                    "the Pebble OS filesystem is flat; subfolders are only allowed through mounts"
-                )
-            if not remainder or remainder.startswith("/") or any(part in {"", ".", ".."} for part in remainder.split("/")):
-                raise FileSystemError("invalid mounted file path")
-            host_root = self.mounts[mount_name]
-            path = (host_root / remainder).resolve()
+            if mount_name in self.mounts:
+                if not remainder or remainder.startswith("/") or any(part in {"", ".", ".."} for part in remainder.split("/")):
+                    raise FileSystemError("invalid mounted file path")
+                host_root = self.mounts[mount_name]
+                path = (host_root / remainder).resolve()
+                try:
+                    path.relative_to(host_root)
+                except ValueError as exc:
+                    raise FileSystemError("mounted file path escapes its mount root") from exc
+                return path
+            if cleaned.startswith("/") or any(part in {"", ".", ".."} for part in cleaned.split("/")):
+                raise FileSystemError("invalid file path")
+            path = (self.root / cleaned).resolve()
             try:
-                path.relative_to(host_root)
+                path.relative_to(self.root.resolve())
             except ValueError as exc:
-                raise FileSystemError("mounted file path escapes its mount root") from exc
+                raise FileSystemError("file path escapes the Pebble OS root") from exc
             return path
 
         return self.root / cleaned

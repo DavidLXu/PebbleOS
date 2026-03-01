@@ -1,6 +1,7 @@
 VFS_BACKING_FILE = ".__pebble_vfs__.db"
 VFS_RUN_SHADOW_FILE = ".__pebble_run_shadow__.peb"
 VFS_NANO_SHADOW_FILE = ".__pebble_nano_shadow__.txt"
+VFS_DIR_MARKER_PREFIX = ".__pebble_dir__/"
 
 def count_lines(text):
     if len(text) == 0:
@@ -93,6 +94,21 @@ def min_value(left, right):
     if left < right:
         return left
     return right
+
+def format_bytes(size):
+    if size < 1024:
+        return str(size) + " B"
+    if size < 1024 * 1024:
+        return format_scaled_unit(size, 1024, "KB")
+    if size < 1024 * 1024 * 1024:
+        return format_scaled_unit(size, 1024 * 1024, "MB")
+    return format_scaled_unit(size, 1024 * 1024 * 1024, "GB")
+
+def format_scaled_unit(size, unit_size, suffix):
+    whole = int_div(size, unit_size)
+    remainder = size - whole * unit_size
+    decimal = int_div(remainder * 10, unit_size)
+    return str(whole) + "." + str(decimal) + " " + suffix
 
 def rest(items):
     out = []
@@ -284,6 +300,171 @@ def tan(angle):
     return int_div(sin(angle) * SIN_SCALE, c)
 
 RANDOM_BOX = {"state": 1}
+MEMORY_BOX = {"cells": [], "size": 0, "next_free": 0}
+
+def make_zero_cells(count):
+    cells = []
+    i = 0
+    while i < count:
+        append(cells, 0)
+        i = i + 1
+    return cells
+
+def require_memory_index(index):
+    if index < 0:
+        runtime_fail("memory index cannot be negative")
+    if index >= MEMORY_BOX["size"]:
+        runtime_fail("memory index is out of range")
+    return index
+
+def memory_init(size):
+    if size < 0:
+        runtime_fail("memory.init() requires a non-negative size")
+    MEMORY_BOX["cells"] = make_zero_cells(size)
+    MEMORY_BOX["size"] = size
+    MEMORY_BOX["next_free"] = 0
+    return size
+
+def memory_size():
+    return MEMORY_BOX["size"]
+
+def memory_read(index):
+    require_memory_index(index)
+    return MEMORY_BOX["cells"][index]
+
+def memory_write(index, value):
+    require_memory_index(index)
+    MEMORY_BOX["cells"][index] = value
+    return value
+
+def memory_clear():
+    MEMORY_BOX["cells"] = make_zero_cells(MEMORY_BOX["size"])
+    MEMORY_BOX["next_free"] = 0
+    return MEMORY_BOX["size"]
+
+def memory_fill(value):
+    i = 0
+    while i < MEMORY_BOX["size"]:
+        MEMORY_BOX["cells"][i] = value
+        i = i + 1
+    return MEMORY_BOX["size"]
+
+def memory_copy(src, dst, count):
+    if count < 0:
+        runtime_fail("memory.copy() requires a non-negative count")
+    temp = []
+    i = 0
+    while i < count:
+        append(temp, memory_read(src + i))
+        i = i + 1
+    i = 0
+    while i < count:
+        memory_write(dst + i, temp[i])
+        i = i + 1
+    return count
+
+def memory_slice(base, count):
+    if count < 0:
+        runtime_fail("memory.slice() requires a non-negative count")
+    out = []
+    i = 0
+    while i < count:
+        append(out, memory_read(base + i))
+        i = i + 1
+    return out
+
+def memory_store(base, items):
+    i = 0
+    while i < len(items):
+        memory_write(base + i, items[i])
+        i = i + 1
+    return len(items)
+
+def memory_dump():
+    return memory_slice(0, MEMORY_BOX["size"])
+
+def memory_alloc(count):
+    if count < 0:
+        runtime_fail("memory.alloc() requires a non-negative size")
+    start = MEMORY_BOX["next_free"]
+    if start + count > MEMORY_BOX["size"]:
+        runtime_fail("out of memory")
+    MEMORY_BOX["next_free"] = start + count
+    return start
+
+def memory_top():
+    return MEMORY_BOX["next_free"]
+
+HEAP_BOX = {"base": 0, "limit": 0, "next": 0, "count": 0}
+
+def heap_init(size):
+    if size < 0:
+        runtime_fail("heap.init() requires a non-negative size")
+    memory_init(size)
+    HEAP_BOX["base"] = 0
+    HEAP_BOX["limit"] = size
+    HEAP_BOX["next"] = 0
+    HEAP_BOX["count"] = 0
+    return size
+
+def heap_capacity():
+    return HEAP_BOX["limit"] - HEAP_BOX["base"]
+
+def heap_used():
+    return HEAP_BOX["next"] - HEAP_BOX["base"]
+
+def heap_count():
+    return HEAP_BOX["count"]
+
+def heap_alloc(kind, payload_size):
+    if payload_size < 0:
+        runtime_fail("heap.alloc() requires a non-negative payload size")
+    header_size = 2
+    total = header_size + payload_size
+    if HEAP_BOX["next"] + total > HEAP_BOX["limit"]:
+        runtime_fail("heap out of memory")
+    ptr = HEAP_BOX["next"]
+    memory_write(ptr, kind)
+    memory_write(ptr + 1, payload_size)
+    i = 0
+    while i < payload_size:
+        memory_write(ptr + header_size + i, 0)
+        i = i + 1
+    HEAP_BOX["next"] = ptr + total
+    HEAP_BOX["count"] = HEAP_BOX["count"] + 1
+    return ptr
+
+def heap_kind(ptr):
+    return memory_read(ptr)
+
+def heap_size(ptr):
+    return memory_read(ptr + 1)
+
+def heap_payload_base(ptr):
+    return ptr + 2
+
+def heap_read(ptr, offset):
+    if offset < 0 or offset >= heap_size(ptr):
+        runtime_fail("heap.read() offset is out of range")
+    return memory_read(heap_payload_base(ptr) + offset)
+
+def heap_write(ptr, offset, value):
+    if offset < 0 or offset >= heap_size(ptr):
+        runtime_fail("heap.write() offset is out of range")
+    memory_write(heap_payload_base(ptr) + offset, value)
+    return value
+
+def heap_store(ptr, items):
+    if len(items) > heap_size(ptr):
+        runtime_fail("heap.store() payload is larger than object size")
+    i = 0
+    while i < len(items):
+        heap_write(ptr, i, items[i])
+        i = i + 1
+    return len(items)
+
+def heap_slice(ptr):
+    return memory_slice(heap_payload_base(ptr), heap_size(ptr))
 
 def text_len(text):
     return len(text)
@@ -383,11 +564,89 @@ def active_fs_mode():
 def is_system_path(name):
     return starts_with(name, "system/")
 
+def has_prefix(text, prefix):
+    return starts_with(text, prefix)
+
+def strip_prefix(text, prefix):
+    return slice_text(text, len(prefix), len(text))
+
+def split_path(name):
+    return split_lines(replace_path_separators(name))
+
+def join_path_parts(parts):
+    if len(parts) == 0:
+        return ""
+    out = parts[0]
+    i = 1
+    while i < len(parts):
+        out = out + "/" + parts[i]
+        i = i + 1
+    return out
+
+def storage_name(display_path):
+    if display_path == "/":
+        return ""
+    return slice_text(display_path, 1, len(display_path))
+
+def display_path(storage_name_value):
+    if len(storage_name_value) == 0:
+        return "/"
+    return "/" + storage_name_value
+
+def normalize_path(name):
+    if len(name) == 0:
+        runtime_fail("file name cannot be empty")
+    absolute = starts_with(name, "/")
+    if absolute:
+        base_parts = []
+        raw_parts = split_path(slice_text(name, 1, len(name)))
+    elif is_system_path(name):
+        base_parts = []
+        raw_parts = split_path(name)
+    else:
+        base_parts = split_path(storage_name(CWD))
+        raw_parts = split_path(name)
+    out = []
+    i = 0
+    while i < len(base_parts):
+        part = base_parts[i]
+        if len(part) > 0:
+            append(out, part)
+        i = i + 1
+    i = 0
+    while i < len(raw_parts):
+        part = raw_parts[i]
+        if len(part) == 0 or part == ".":
+            i = i + 1
+        elif part == "..":
+            if len(out) == 0:
+                runtime_fail("file path escapes the Pebble OS root")
+            out = slice_list(out, 0, len(out) - 1)
+            i = i + 1
+        elif find_char(part, "\\", 0) >= 0:
+            runtime_fail("invalid file name")
+        else:
+            append(out, part)
+            i = i + 1
+    return display_path(join_path_parts(out))
+
+def slice_list(items, start_index, end_index):
+    out = []
+    i = start_index
+    while i < end_index:
+        append(out, items[i])
+        i = i + 1
+    return out
+
 def is_hostfs_mode():
     return active_fs_mode() == "hostfs"
 
 def is_vfs_mode():
     mode = active_fs_mode()
+    if mode == "mfs":
+        return 1
+    if mode == "mfs-import":
+        return 1
     if mode == "vfs-import":
         return 1
     if mode == "vfs-persistent":
@@ -397,16 +656,34 @@ def is_vfs_mode():
 def vfs_boot_mode():
     return active_fs_mode() == "vfs-import"
 
+def mfs_import_mode():
+    return active_fs_mode() == "mfs-import"
+
 def user_path_error(name):
     if len(name) == 0:
         return "file name cannot be empty"
-    if name == "." or name == "..":
-        return "invalid file name"
     if find_char(name, "\\", 0) >= 0:
         return "invalid file name"
-    if find_char(name, "/", 0) >= 0:
-        return "the Pebble OS filesystem is flat; subfolders are only allowed through mounts"
+    parts = split_path(name)
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        if part == "" or part == "." or part == "..":
+            return "invalid file path"
+        i = i + 1
     return ""
+
+def replace_path_separators(name):
+    out = ""
+    i = 0
+    while i < len(name):
+        ch = name[i]
+        if ch == "/":
+            out = out + "\n"
+        else:
+            out = out + ch
+        i = i + 1
+    return out
 
 def runtime_fail(message):
     runtime_error(message)
@@ -414,6 +691,15 @@ def runtime_fail(message):
 
 def empty_vfs():
     return {"files": {}}
+
+def dir_marker_name(name):
+    return VFS_DIR_MARKER_PREFIX + name
+
+def is_dir_marker(name):
+    return has_prefix(name, VFS_DIR_MARKER_PREFIX)
+
+def strip_dir_marker(name):
+    return strip_prefix(name, VFS_DIR_MARKER_PREFIX)
 
 def parse_vfs_record(line):
     first_tab = find_char(line, "\t", 0)
@@ -468,6 +754,89 @@ def should_import_host_file(name):
         return 0
     return 1
 
+def vfs_visible_names(db):
+    names = sort_strings(keys(db["files"]))
+    out = []
+    i = 0
+    while i < len(names):
+        name = names[i]
+        if is_dir_marker(name) == 0:
+            append(out, name)
+        i = i + 1
+    return out
+
+def vfs_directory_exists(name):
+    if len(name) == 0:
+        return 1
+    db = load_vfs()
+    files = db["files"]
+    if dict_has_key(files, dir_marker_name(name)):
+        return 1
+    names = keys(files)
+    prefix = name + "/"
+    i = 0
+    while i < len(names):
+        key = names[i]
+        visible = key
+        if is_dir_marker(key):
+            visible = strip_dir_marker(key)
+        if visible == name or has_prefix(visible, prefix):
+            return 1
+        i = i + 1
+    return 0
+
+def vfs_directory_empty(name):
+    db = load_vfs()
+    files = db["files"]
+    names = keys(files)
+    prefix = name + "/"
+    i = 0
+    while i < len(names):
+        key = names[i]
+        visible = key
+        if is_dir_marker(key):
+            visible = strip_dir_marker(key)
+        if visible != name and has_prefix(visible, prefix):
+            return 0
+        i = i + 1
+    return 1
+
+def create_vfs_directory(name):
+    error = user_path_error(name)
+    if len(error) > 0:
+        runtime_fail(error)
+    if vfs_directory_exists(name):
+        runtime_fail("directory '" + name + "' already exists")
+    db = load_vfs()
+    files = db["files"]
+    files[dir_marker_name(name)] = {"mtime": current_time(), "content": ""}
+    db["files"] = files
+    save_vfs(db)
+    return 0
+
+def remove_vfs_directory(name):
+    error = user_path_error(name)
+    if len(error) > 0:
+        runtime_fail(error)
+    db = load_vfs()
+    files = db["files"]
+    marker = dir_marker_name(name)
+    if dict_has_key(files, marker) == 0:
+        runtime_fail("directory '" + name + "' does not exist")
+    if vfs_directory_empty(name) == 0:
+        runtime_fail("directory '" + name + "' is not empty")
+    names = keys(files)
+    rebuilt = {}
+    i = 0
+    while i < len(names):
+        key = names[i]
+        if key != marker:
+            rebuilt[key] = files[key]
+        i = i + 1
+    db["files"] = rebuilt
+    save_vfs(db)
+    return 0
+
 def import_host_files_to_vfs():
     db = empty_vfs()
     host_names = raw_list_files()
@@ -483,11 +852,24 @@ def import_host_files_to_vfs():
     return db
 
 def load_vfs():
+    if mfs_import_mode():
+        if raw_file_exists(VFS_BACKING_FILE):
+            return parse_vfs(raw_read_file(VFS_BACKING_FILE))
+        return import_host_files_to_vfs()
     if vfs_boot_mode():
         return import_host_files_to_vfs()
+    if active_fs_mode() == "mfs":
+        if raw_file_exists(VFS_BACKING_FILE):
+            return parse_vfs(raw_read_file(VFS_BACKING_FILE))
+        db = empty_vfs()
+        save_vfs(db)
+        return db
     if raw_file_exists(VFS_BACKING_FILE):
         return parse_vfs(raw_read_file(VFS_BACKING_FILE))
     return import_host_files_to_vfs()
+
+def sync_filesystem():
+    return filesystem_sync()
 
 def get_vfs_user_record(name):
     error = user_path_error(name)
@@ -550,7 +932,7 @@ def fs_list():
     if is_hostfs_mode():
         return sort_strings(raw_list_files())
     db = load_vfs()
-    names = sort_strings(keys(db["files"]))
+    names = vfs_visible_names(db)
     host_names = raw_list_files()
     i = 0
     while i < len(host_names):
@@ -570,6 +952,36 @@ def fs_exists(name):
         return 0
     db = load_vfs()
     return dict_has_key(db["files"], name)
+
+def fs_directory_exists(name):
+    if is_hostfs_mode():
+        return raw_directory_exists(name)
+    if is_system_path(name):
+        return raw_directory_exists(name)
+    return vfs_directory_exists(name)
+
+def fs_make_directory(name):
+    if is_hostfs_mode():
+        return raw_make_directory(name)
+    if is_system_path(name):
+        return raw_make_directory(name)
+    return create_vfs_directory(name)
+
+def fs_remove_directory(name):
+    if is_hostfs_mode():
+        return raw_remove_directory(name)
+    if is_system_path(name):
+        return raw_remove_directory(name)
+    return remove_vfs_directory(name)
+
+def fs_directory_empty(name):
+    if is_hostfs_mode():
+        return raw_directory_empty(name)
+    if is_system_path(name):
+        return raw_directory_empty(name)
+    if vfs_directory_exists(name) == 0:
+        runtime_fail("directory '" + name + "' does not exist")
+    return vfs_directory_empty(name)
 
 def fs_create(name, text):
     if is_hostfs_mode():
@@ -619,29 +1031,70 @@ def fs_time(name):
 def fs_run_uses_shadow():
     return is_vfs_mode()
 
+def cwd():
+    return CWD
+
+def chdir(name):
+    target = normalize_path(name)
+    storage = storage_name(target)
+    if fs_directory_exists(storage) == 0:
+        runtime_fail("directory '" + name + "' does not exist")
+    return "__cwd__:" + target
+
 def list_files():
-    return fs_list()
+    names = fs_list()
+    base = storage_name(CWD)
+    prefix = ""
+    if len(base) > 0:
+        prefix = base + "/"
+    out = []
+    i = 0
+    while i < len(names):
+        name = names[i]
+        if is_system_path(name):
+            if len(base) == 0:
+                append(out, name)
+            elif has_prefix(name, prefix):
+                append(out, strip_prefix(name, prefix))
+        elif len(prefix) == 0:
+            append(out, name)
+        elif has_prefix(name, prefix):
+            append(out, strip_prefix(name, prefix))
+        i = i + 1
+    return out
 
 def file_exists(name):
-    return fs_exists(name)
+    return fs_exists(storage_name(normalize_path(name)))
+
+def directory_exists(name):
+    return fs_directory_exists(storage_name(normalize_path(name)))
+
+def directory_empty(name):
+    return fs_directory_empty(storage_name(normalize_path(name)))
+
+def make_directory(name):
+    return fs_make_directory(storage_name(normalize_path(name)))
+
+def remove_directory(name):
+    return fs_remove_directory(storage_name(normalize_path(name)))
 
 def create_file(name, text):
-    return fs_create(name, text)
+    return fs_create(storage_name(normalize_path(name)), text)
 
 def modify_file(name, text):
-    return fs_modify(name, text)
+    return fs_modify(storage_name(normalize_path(name)), text)
 
 def delete_file(name):
-    return fs_delete(name)
+    return fs_delete(storage_name(normalize_path(name)))
 
 def read_file(name):
-    return fs_read(name)
+    return fs_read(storage_name(normalize_path(name)))
 
 def write_file(name, text):
-    return fs_write(name, text)
+    return fs_write(storage_name(normalize_path(name)), text)
 
 def file_time(name):
-    return fs_time(name)
+    return fs_time(storage_name(normalize_path(name)))
 
 def term_write_line(text):
     term_write(text + "\r\n")
@@ -684,13 +1137,15 @@ def boot():
         load_vfs()
     print runtime_banner()
     print "[runtime] filesystem files: " + str(filesystem_file_count())
-    print "[runtime] filesystem bytes: " + str(filesystem_total_bytes())
+    print "[runtime] filesystem usage: " + format_bytes(filesystem_total_bytes())
     print "[runtime] shell module: " + SYSTEM_SHELL_PATH
     print "[runtime] shell lines: " + str(count_lines(SYSTEM_SHELL_SOURCE))
     print "[runtime] shell head: " + first_line(SYSTEM_SHELL_SOURCE)
     print "[runtime] filesystem mode: " + active_fs_mode()
-    if is_vfs_mode():
+    if active_fs_mode() == "mfs" or active_fs_mode() == "mfs-import":
+        print "[runtime] user filesystem: Pebble memory filesystem"
+    elif is_vfs_mode():
         print "[runtime] user filesystem: Pebble-managed virtual disk"
     else:
-        print "[runtime] user filesystem: host flat filesystem"
+        print "[runtime] user filesystem: host rooted filesystem"
     print "[runtime] boot complete"

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import cmd
+import os
 import select
 import shutil
 import shlex
+import signal
 import sys
 import termios
+import threading
 import tty
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -14,13 +18,27 @@ from pebble_bootloader.fs import FileSystemError, FlatFileSystem
 from pebble_bootloader.lang import PebbleBytecodeInterpreter, PebbleError, PebbleInterpreter
 
 
-VALID_FS_MODES = {"hostfs", "vfs-import", "vfs-persistent"}
+VALID_FS_MODES = {"hostfs", "mfs", "mfs-import", "vfs-import", "vfs-persistent"}
+
+
+@dataclass
+class BackgroundJob:
+    job_id: int
+    command: str
+    program: str
+    argv: list[str]
+    exec_mode: str
+    cwd: str
+    outputs: list[str] = field(default_factory=list)
+    status: str = "running"
+    error: str | None = None
+    thread: threading.Thread | None = None
 
 
 class PebbleShell(cmd.Cmd):
     intro = (
         "Pebble OS shell\n"
-        "Flat filesystem: one folder, no subdirectories\n"
+        "Filesystem: rooted paths with directories\n"
         "Type 'help' for commands."
     )
     prompt = "pebble-os> "
@@ -31,6 +49,11 @@ class PebbleShell(cmd.Cmd):
             raise ValueError(f"invalid fs mode '{fs_mode}'")
         self.fs = FlatFileSystem(root)
         self.fs_mode = fs_mode
+        self.cwd = "/"
+        self.mfs_blob: str | None = None
+        self._jobs: dict[int, BackgroundJob] = {}
+        self._jobs_lock = threading.Lock()
+        self._next_job_id = 1
         self.fs.mount("system", Path(__file__).resolve().parent.parent / "pebble_system")
         self._refresh_shell_state()
 
@@ -43,6 +66,55 @@ class PebbleShell(cmd.Cmd):
     def do_EOF(self, arg: str) -> bool:
         print()
         return self.do_exit(arg)
+
+    def completenames(self, text: str, *ignored) -> list[str]:
+        commands = [
+            "help",
+            "ls",
+            "cd",
+            "pwd",
+            "mkdir",
+            "rmdir",
+            "time",
+            "sync",
+            "touch",
+            "edit",
+            "cat",
+            "rm",
+            "cp",
+            "mv",
+            "run",
+            "runbg",
+            "exec",
+            "execbg",
+            "jobs",
+            "fg",
+            "nano",
+            "lang",
+            "exit",
+        ]
+        return [name for name in commands if name.startswith(text)]
+
+    def completedefault(self, text: str, line: str, begidx: int, endidx: int) -> list[str]:
+        command, arg_index = self._completion_context(line, begidx)
+        if command in {"cd", "mkdir", "rmdir"}:
+            return self._complete_paths(text, directories_only=True, fuzzy=(command == "cd"))
+        if command == "ls":
+            return self._complete_paths(text, directories_only=False, fuzzy=True)
+        if command in {"touch", "edit", "cat", "rm", "run", "runbg", "exec", "execbg", "nano"}:
+            return self._complete_paths(
+                text,
+                directories_only=False,
+                fuzzy=(command in {"run", "runbg", "exec", "execbg"}),
+                recursive_fuzzy=(command in {"run", "runbg", "exec", "execbg"}),
+            )
+        if command in {"cp", "mv"}:
+            return self._complete_paths(text, directories_only=(arg_index > 0), fuzzy=False)
+        if command == "fg":
+            return self._complete_job_ids(text)
+        if command == "help":
+            return self.completenames(text)
+        return []
 
     def postcmd(self, stop: bool, line: str) -> bool:
         self._refresh_shell_state()
@@ -64,6 +136,106 @@ class PebbleShell(cmd.Cmd):
             return True
         return None
 
+    def _completion_context(self, line: str, begidx: int) -> tuple[str, int]:
+        prefix = line[:begidx]
+        try:
+            parts = shlex.split(prefix)
+        except ValueError:
+            parts = prefix.split()
+        if not parts:
+            return "", 0
+        if prefix.endswith(" "):
+            return parts[0], len(parts) - 1
+        return parts[0], max(0, len(parts) - 2)
+
+    def _complete_paths(
+        self,
+        text: str,
+        directories_only: bool,
+        fuzzy: bool = False,
+        recursive_fuzzy: bool = False,
+    ) -> list[str]:
+        logical_prefix = text or ""
+        absolute = logical_prefix.startswith("/")
+        if "/" in logical_prefix:
+            dir_text, partial = logical_prefix.rsplit("/", 1)
+            search_dir = "/" + dir_text.strip("/") if absolute else dir_text
+        else:
+            dir_text = ""
+            partial = logical_prefix
+            search_dir = "/" if absolute else "."
+        try:
+            directory_logical = self._normalize_user_path(search_dir)
+            directory_host = self._logical_path_to_host(directory_logical)
+        except FileSystemError:
+            return []
+        if not directory_host.exists() or not directory_host.is_dir():
+            return []
+
+        prefix_matches: list[str] = []
+        fuzzy_matches: list[str] = []
+        partial_folded = partial.lower()
+        for child in sorted(directory_host.iterdir(), key=lambda item: item.name):
+            if directories_only and not child.is_dir():
+                continue
+            if dir_text:
+                suggestion = dir_text.rstrip("/") + "/" + child.name
+            elif absolute:
+                suggestion = "/" + child.name
+            else:
+                suggestion = child.name
+            if child.is_dir():
+                suggestion = suggestion + "/"
+            if child.name.startswith(partial):
+                prefix_matches.append(suggestion)
+                continue
+            if fuzzy and len(partial_folded) > 0 and partial_folded in child.name.lower():
+                fuzzy_matches.append(suggestion)
+        matches = prefix_matches + fuzzy_matches
+        if matches or not recursive_fuzzy or len(partial_folded) == 0 or "/" in logical_prefix:
+            return matches
+
+        recursive_matches: list[str] = []
+        for suggestion in self._visible_path_suggestions(directories_only):
+            folded = suggestion.lower().rstrip("/")
+            if partial_folded in folded and suggestion not in recursive_matches:
+                recursive_matches.append(suggestion)
+        return recursive_matches
+
+    def _visible_path_suggestions(self, directories_only: bool) -> list[str]:
+        suggestions: list[str] = []
+        seen: set[str] = set()
+        for name in self.fs.list_files():
+            if name.startswith("system/"):
+                suggestion = name
+            elif self.cwd == "/":
+                suggestion = name
+            else:
+                prefix = self.cwd.strip("/") + "/"
+                if not name.startswith(prefix):
+                    continue
+                suggestion = name[len(prefix) :]
+            if suggestion not in seen:
+                seen.add(suggestion)
+                suggestions.append(suggestion)
+            parts = suggestion.split("/")
+            current = ""
+            for part in parts[:-1]:
+                current = part if current == "" else current + "/" + part
+                dir_suggestion = current + "/"
+                if dir_suggestion not in seen:
+                    seen.add(dir_suggestion)
+                    suggestions.append(dir_suggestion)
+        if directories_only:
+            return [item for item in suggestions if item.endswith("/")]
+        return suggestions
+
+    def _complete_job_ids(self, text: str) -> list[str]:
+        prefix = text or ""
+        with self._jobs_lock:
+            ids = sorted(self._jobs)
+        return [str(job_id) for job_id in ids if str(job_id).startswith(prefix)]
+
     def _refresh_shell_state(self) -> None:
         try:
             prompt = self._system_shell_call("shell_prompt")
@@ -80,7 +252,13 @@ class PebbleShell(cmd.Cmd):
         try:
             argv = self._split_args(arg)
             result = self._system_shell_call("shell_dispatch", [command, argv], consume_output=True)
+            if isinstance(result, str) and result.startswith("__cwd__:"):
+                self.cwd = result[8:]
+                return False
             return result == "__exit__"
+        except KeyboardInterrupt:
+            print("^C")
+            return False
         except (FileSystemError, PebbleError, ValueError) as exc:
             print(exc)
             return False
@@ -100,6 +278,7 @@ class PebbleShell(cmd.Cmd):
             "SYSTEM_SHELL_PATH": "system/shell.peb",
             "SYSTEM_SHELL_SOURCE": shell_source,
             "FS_MODE": self.fs_mode,
+            "CWD": self.cwd,
         }
         call_parts: list[str] = []
         if args:
@@ -112,31 +291,48 @@ class PebbleShell(cmd.Cmd):
         return runtime.globals.get("__result")
 
     def _make_runtime(self, consume_output: bool) -> PebbleInterpreter:
+        consumer = None
+        if consume_output:
+            consumer = lambda text: print(text, flush=True)
         return PebbleInterpreter(
             self.fs.root,
             input_provider=input,
-            output_consumer=print if consume_output else None,
-            path_resolver=self.fs.resolve_path,
+            output_consumer=consumer,
+            path_resolver=self._resolve_user_path_to_host,
             host_functions={
                 "raw_list_files": self._host_list_files,
-                "raw_file_exists": self._host_file_exists,
-                "raw_create_file": self._host_create_file,
-                "raw_modify_file": self._host_modify_file,
-                "raw_delete_file": self._host_delete_file,
-                "raw_file_time": self._host_file_time,
+                "raw_file_exists": self._host_raw_file_exists,
+                "raw_create_file": self._host_raw_create_file,
+                "raw_modify_file": self._host_raw_modify_file,
+                "raw_delete_file": self._host_raw_delete_file,
+                "raw_file_time": self._host_raw_file_time,
                 "raw_read_file": self._host_raw_read_file,
                 "raw_write_file": self._host_raw_write_file,
+                "raw_directory_exists": self._host_raw_directory_exists,
+                "raw_make_directory": self._host_raw_make_directory,
+                "raw_remove_directory": self._host_raw_remove_directory,
+                "raw_directory_empty": self._host_raw_directory_empty,
                 "list_files": self._host_list_files,
                 "file_time": self._host_file_time,
                 "file_exists": self._host_file_exists,
+                "directory_exists": self._host_directory_exists,
                 "create_file": self._host_create_file,
                 "modify_file": self._host_modify_file,
                 "delete_file": self._host_delete_file,
+                "make_directory": self._host_make_directory,
+                "remove_directory": self._host_remove_directory,
+                "directory_empty": self._host_directory_empty,
                 "capture_text": self._host_capture_text,
                 "run_program": self._host_run_program,
                 "exec_program": self._host_exec_program,
+                "start_background_job": self._host_start_background_job,
+                "list_background_jobs": self._host_list_background_jobs,
+                "foreground_job": self._host_foreground_job,
+                "cwd": self._host_cwd,
+                "chdir": self._host_chdir,
                 "filesystem_file_count": self._host_filesystem_file_count,
                 "filesystem_total_bytes": self._host_filesystem_total_bytes,
+                "filesystem_sync": self._host_filesystem_sync,
                 "term_write": self._host_term_write,
                 "term_flush": self._host_term_flush,
                 "term_clear": self._host_term_clear,
@@ -168,58 +364,212 @@ class PebbleShell(cmd.Cmd):
     def _host_file_time(self, args: list[object], line_number: int) -> str:
         name = self._require_string_arg("file_time", args, line_number, 1)
         try:
-            return self.fs.file_time(name)
-        except FileSystemError as exc:
+            path = self._resolve_user_path_to_host(name)
+            if not path.exists():
+                raise FileSystemError(f"file '{name}' does not exist")
+            return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d, %H:%M:%S")
+        except (FileSystemError, OSError) as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
+
+    def _host_raw_file_time(self, args: list[object], line_number: int) -> str:
+        name = self._require_string_arg("raw_file_time", args, line_number, 1)
+        try:
+            path = self._resolve_storage_path_to_host(name)
+            if not path.exists():
+                raise FileSystemError(f"file '{name}' does not exist")
+            return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d, %H:%M:%S")
+        except (FileSystemError, OSError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+
+    def _host_raw_file_exists(self, args: list[object], line_number: int) -> int:
+        name = self._require_string_arg("raw_file_exists", args, line_number, 1)
+        try:
+            if self.fs_mode in {"mfs", "mfs-import"} and name == ".__pebble_vfs__.db":
+                return int(self.mfs_blob is not None)
+            return int(self._resolve_storage_path_to_host(name).is_file())
+        except FileSystemError:
+            return 0
 
     def _host_raw_read_file(self, args: list[object], line_number: int) -> str:
         name = self._require_string_arg("raw_read_file", args, line_number, 1)
+        if self.fs_mode in {"mfs", "mfs-import"} and name == ".__pebble_vfs__.db":
+            if self.mfs_blob is None:
+                raise PebbleError(f"line {line_number}: file '{name}' does not exist")
+            return self.mfs_blob
         try:
-            return self.fs.read_file(name)
+            return self._resolve_storage_path_to_host(name).read_text(encoding="utf-8")
         except FileSystemError as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
+        except FileNotFoundError as exc:
+            raise PebbleError(f"line {line_number}: file '{name}' does not exist") from exc
 
     def _host_raw_write_file(self, args: list[object], line_number: int) -> str:
         name, text = self._require_name_and_text("raw_write_file", args, line_number)
+        if self.fs_mode in {"mfs", "mfs-import"} and name == ".__pebble_vfs__.db":
+            self.mfs_blob = text
+            return text
         try:
-            path = self.fs.resolve_path(name)
+            path = self._resolve_storage_path_to_host(name)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
         except FileSystemError as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
         return text
 
+    def _host_raw_directory_exists(self, args: list[object], line_number: int) -> int:
+        name = self._require_string_arg("raw_directory_exists", args, line_number, 1)
+        try:
+            return int(self._resolve_storage_path_to_host(name).is_dir())
+        except FileSystemError:
+            return 0
+
+    def _host_raw_create_file(self, args: list[object], line_number: int) -> int:
+        name, text = self._require_name_and_text("raw_create_file", args, line_number)
+        try:
+            path = self._resolve_storage_path_to_host(name)
+            if path.exists():
+                raise FileSystemError(f"file '{name}' already exists")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        except (FileSystemError, OSError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+        return 0
+
+    def _host_raw_modify_file(self, args: list[object], line_number: int) -> int:
+        name, text = self._require_name_and_text("raw_modify_file", args, line_number)
+        try:
+            path = self._resolve_storage_path_to_host(name)
+            if not path.exists():
+                raise FileSystemError(f"file '{name}' does not exist")
+            path.write_text(text, encoding="utf-8")
+        except (FileSystemError, OSError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+        return 0
+
+    def _host_raw_delete_file(self, args: list[object], line_number: int) -> int:
+        name = self._require_string_arg("raw_delete_file", args, line_number, 1)
+        try:
+            path = self._resolve_storage_path_to_host(name)
+            if not path.exists():
+                raise FileSystemError(f"file '{name}' does not exist")
+            path.unlink()
+        except (FileSystemError, OSError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+        return 0
+
+    def _host_raw_make_directory(self, args: list[object], line_number: int) -> int:
+        name = self._require_string_arg("raw_make_directory", args, line_number, 1)
+        try:
+            path = self._resolve_storage_path_to_host(name)
+            if path.exists():
+                raise FileSystemError(f"directory '{name}' already exists")
+            path.mkdir(parents=True, exist_ok=False)
+        except (FileSystemError, OSError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+        return 0
+
+    def _host_raw_remove_directory(self, args: list[object], line_number: int) -> int:
+        name = self._require_string_arg("raw_remove_directory", args, line_number, 1)
+        try:
+            path = self._resolve_storage_path_to_host(name)
+            if not path.exists() or not path.is_dir():
+                raise FileSystemError(f"directory '{name}' does not exist")
+            path.rmdir()
+        except (FileSystemError, OSError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+        return 0
+
+    def _host_raw_directory_empty(self, args: list[object], line_number: int) -> int:
+        name = self._require_string_arg("raw_directory_empty", args, line_number, 1)
+        try:
+            path = self._resolve_storage_path_to_host(name)
+            if not path.exists() or not path.is_dir():
+                raise FileSystemError(f"directory '{name}' does not exist")
+            return int(not any(path.iterdir()))
+        except (FileSystemError, OSError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+
     def _host_file_exists(self, args: list[object], line_number: int) -> int:
         name = self._require_string_arg("file_exists", args, line_number, 1)
         try:
-            self.fs.read_file(name)
+            if self.fs_mode in {"mfs", "mfs-import"} and name == ".__pebble_vfs__.db":
+                return int(self.mfs_blob is not None)
+            return int(self._resolve_user_path_to_host(name).is_file())
         except FileSystemError:
             return 0
-        return 1
 
     def _host_create_file(self, args: list[object], line_number: int) -> int:
         name, text = self._require_name_and_text("create_file", args, line_number)
         try:
-            self.fs.create_file(name, text)
-        except FileSystemError as exc:
+            path = self._resolve_user_path_to_host(name)
+            if path.exists():
+                raise FileSystemError(f"file '{name}' already exists")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        except (FileSystemError, OSError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+        return 0
+
+    def _host_make_directory(self, args: list[object], line_number: int) -> int:
+        name = self._require_string_arg("make_directory", args, line_number, 1)
+        try:
+            path = self._resolve_user_path_to_host(name)
+            if path.exists():
+                raise FileSystemError(f"directory '{name}' already exists")
+            path.mkdir(parents=True, exist_ok=False)
+        except (FileSystemError, OSError) as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
         return 0
 
     def _host_modify_file(self, args: list[object], line_number: int) -> int:
         name, text = self._require_name_and_text("modify_file", args, line_number)
         try:
-            self.fs.modify_file(name, text)
-        except FileSystemError as exc:
+            path = self._resolve_user_path_to_host(name)
+            if not path.exists():
+                raise FileSystemError(f"file '{name}' does not exist")
+            path.write_text(text, encoding="utf-8")
+        except (FileSystemError, OSError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+        return 0
+
+    def _host_remove_directory(self, args: list[object], line_number: int) -> int:
+        name = self._require_string_arg("remove_directory", args, line_number, 1)
+        try:
+            path = self._resolve_user_path_to_host(name)
+            if not path.exists() or not path.is_dir():
+                raise FileSystemError(f"directory '{name}' does not exist")
+            path.rmdir()
+        except (FileSystemError, OSError) as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
         return 0
 
     def _host_delete_file(self, args: list[object], line_number: int) -> int:
         name = self._require_string_arg("delete_file", args, line_number, 1)
         try:
-            self.fs.delete_file(name)
-        except FileSystemError as exc:
+            path = self._resolve_user_path_to_host(name)
+            if not path.exists():
+                raise FileSystemError(f"file '{name}' does not exist")
+            path.unlink()
+        except (FileSystemError, OSError) as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
         return 0
+
+    def _host_directory_exists(self, args: list[object], line_number: int) -> int:
+        name = self._require_string_arg("directory_exists", args, line_number, 1)
+        try:
+            return int(self._resolve_user_path_to_host(name).is_dir())
+        except FileSystemError:
+            return 0
+
+    def _host_directory_empty(self, args: list[object], line_number: int) -> int:
+        name = self._require_string_arg("directory_empty", args, line_number, 1)
+        try:
+            path = self._resolve_user_path_to_host(name)
+            if not path.exists() or not path.is_dir():
+                raise FileSystemError(f"directory '{name}' does not exist")
+            return int(not any(path.iterdir()))
+        except (FileSystemError, OSError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
 
     def _host_capture_text(self, args: list[object], line_number: int) -> str:
         if args:
@@ -260,6 +610,52 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: {exc}") from exc
         return 0
 
+    def _host_start_background_job(self, args: list[object], line_number: int) -> int:
+        if len(args) != 3:
+            raise PebbleError(f"line {line_number}: start_background_job() expected 3 arguments but got {len(args)}")
+        if not isinstance(args[0], str) or not isinstance(args[2], str):
+            raise PebbleError(f"line {line_number}: start_background_job() expects string arguments")
+        argv = args[1]
+        if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
+            raise PebbleError(f"line {line_number}: start_background_job() expects a list of string arguments")
+        mode = args[2]
+        if mode not in {"interp", "bytecode"}:
+            raise PebbleError(f"line {line_number}: invalid background job mode")
+        try:
+            return self._start_background_job(args[0], argv, mode)
+        except (FileSystemError, PebbleError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+
+    def _host_list_background_jobs(self, args: list[object], line_number: int) -> list[str]:
+        if args:
+            raise PebbleError(f"line {line_number}: list_background_jobs() expected 0 arguments but got {len(args)}")
+        return self._list_background_jobs()
+
+    def _host_foreground_job(self, args: list[object], line_number: int) -> list[str]:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: foreground_job() expects 1 integer argument")
+        try:
+            return self._foreground_job(args[0])
+        except (FileSystemError, PebbleError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+
+    def _host_cwd(self, args: list[object], line_number: int) -> str:
+        if args:
+            raise PebbleError(f"line {line_number}: cwd() expected 0 arguments but got {len(args)}")
+        return self.cwd
+
+    def _host_chdir(self, args: list[object], line_number: int) -> str:
+        name = self._require_string_arg("chdir", args, line_number, 1)
+        try:
+            logical = self._normalize_user_path(name)
+            host_path = self._logical_path_to_host(logical)
+            if not host_path.exists() or not host_path.is_dir():
+                raise FileSystemError(f"directory '{name}' does not exist")
+            self.cwd = logical
+            return self.cwd
+        except FileSystemError as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+
     def _host_filesystem_file_count(self, args: list[object], line_number: int) -> int:
         if args:
             raise PebbleError(
@@ -274,8 +670,19 @@ class PebbleShell(cmd.Cmd):
             )
         total = 0
         for name in self.fs.list_files():
-            total = total + self.fs.resolve_path(name).stat().st_size
+            total = total + self._logical_path_to_host("/" + name).stat().st_size
         return total
+
+    def _host_filesystem_sync(self, args: list[object], line_number: int) -> int:
+        if args:
+            raise PebbleError(f"line {line_number}: filesystem_sync() expected 0 arguments but got {len(args)}")
+        if self.fs_mode not in {"mfs", "mfs-import"}:
+            return 0
+        if self.mfs_blob is None:
+            return 0
+        backing = self.fs.resolve_path(".__pebble_vfs__.db")
+        backing.write_text(self.mfs_blob, encoding="utf-8")
+        return 1
 
     def _host_term_write(self, args: list[object], line_number: int) -> str:
         text = self._require_string_arg("term_write", args, line_number, 1)
@@ -330,54 +737,92 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: term_read_key() requires an interactive terminal")
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
+        interrupt_requested = False
+        suspend_requested = False
+        timed_out = False
+        result = ""
         try:
             tty.setraw(fd)
             if timeout_seconds is not None:
                 ready, _, _ = select.select([sys.stdin], [], [], timeout_seconds)
                 if not ready:
-                    return ""
-            first = sys.stdin.read(1)
-            if first == "\x1b":
-                second = sys.stdin.read(1)
-                if second == "[":
-                    third = sys.stdin.read(1)
-                    if third == "A":
-                        return "UP"
-                    if third == "B":
-                        return "DOWN"
-                    if third == "C":
-                        return "RIGHT"
-                    if third == "D":
-                        return "LEFT"
-                    if third == "H":
-                        return "HOME"
-                    if third == "F":
-                        return "END"
-                    if third in {"1", "3", "4", "5", "6", "7", "8"}:
-                        fourth = sys.stdin.read(1)
-                        if fourth == "~":
-                            if third in {"1", "7"}:
-                                return "HOME"
-                            if third == "3":
-                                return "DELETE"
-                            if third in {"4", "8"}:
-                                return "END"
-                            if third == "5":
-                                return "PAGEUP"
-                            if third == "6":
-                                return "PAGEDOWN"
-                return "ESC"
-            if first in {"\r", "\n"}:
-                return "ENTER"
-            if first == "\x7f":
-                return "BACKSPACE"
-            if first == "\x18":
-                return "^X"
-            if first == "\x0f":
-                return "^O"
-            return first
+                    timed_out = True
+                    result = ""
+            if not timed_out:
+                first = sys.stdin.read(1)
+                if first == "\x1b":
+                    ready, _, _ = select.select([sys.stdin], [], [], 0.03)
+                    if not ready:
+                        interrupt_requested = True
+                    else:
+                        second = sys.stdin.read(1)
+                        if second == "O":
+                            third = sys.stdin.read(1)
+                            if third == "P":
+                                suspend_requested = True
+                            else:
+                                result = "ESC"
+                        elif second == "[":
+                            third = sys.stdin.read(1)
+                            if third == "[":
+                                fourth = sys.stdin.read(1)
+                                if fourth == "A":
+                                    suspend_requested = True
+                                else:
+                                    result = "ESC"
+                            elif third == "A":
+                                result = "UP"
+                            elif third == "B":
+                                result = "DOWN"
+                            elif third == "C":
+                                result = "RIGHT"
+                            elif third == "D":
+                                result = "LEFT"
+                            elif third == "H":
+                                result = "HOME"
+                            elif third == "F":
+                                result = "END"
+                            elif third in {"1", "3", "4", "5", "6", "7", "8"}:
+                                fourth = sys.stdin.read(1)
+                                if fourth == "~":
+                                    if third in {"1", "7"}:
+                                        result = "HOME"
+                                    elif third == "3":
+                                        result = "DELETE"
+                                    elif third in {"4", "8"}:
+                                        result = "END"
+                                    elif third == "5":
+                                        result = "PAGEUP"
+                                    elif third == "6":
+                                        result = "PAGEDOWN"
+                        else:
+                            result = "ESC"
+                elif first == "\x03":
+                    interrupt_requested = True
+                elif first == "\x1a":
+                    suspend_requested = True
+                elif first in {"\r", "\n"}:
+                    result = "ENTER"
+                elif first == "\x7f":
+                    result = "BACKSPACE"
+                elif first == "\x18":
+                    result = "^X"
+                elif first == "\x0f":
+                    result = "^O"
+                else:
+                    result = first
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        if interrupt_requested:
+            raise KeyboardInterrupt
+        if suspend_requested:
+            self._suspend_process()
+            return self._read_terminal_key(line_number, timeout_seconds)
+        return result
+
+    def _suspend_process(self) -> None:
+        print("\n[system] suspended; use 'fg' in the host shell to resume", flush=True)
+        os.kill(os.getpid(), signal.SIGTSTP)
 
     def _host_term_rows(self, args: list[object], line_number: int) -> int:
         if args:
@@ -392,49 +837,158 @@ class PebbleShell(cmd.Cmd):
     def _host_current_time(self, args: list[object], line_number: int) -> str:
         if args:
             raise PebbleError(f"line {line_number}: current_time() expected 0 arguments but got {len(args)}")
-        return datetime.now().strftime("%Y-%m-%d, %H:%M")
+        return datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
 
     def _host_runtime_error(self, args: list[object], line_number: int) -> int:
         message = self._require_string_arg("runtime_error", args, line_number, 1)
         raise PebbleError(f"line {line_number}: {message}")
 
-    def _run_program(self, name: str, extra_args: list[str], exec_mode: str = "interp") -> None:
+    def _run_program(self, name: str, extra_args: list[str], exec_mode: str = "interp", cwd: str | None = None) -> None:
+        _, output, error = self._execute_program(name, extra_args, exec_mode=exec_mode, cwd=cwd)
+        if error is not None:
+            if error == "__interrupt__":
+                print("^C")
+                print("[system] program interrupted", flush=True)
+                return
+            raise PebbleError(error)
+        if not output:
+            interactive_program = name in {"nano.peb", "system/nano.peb"}
+            if not interactive_program:
+                print("(no output)")
+            return
+
+    def _execute_program(
+        self,
+        name: str,
+        extra_args: list[str],
+        exec_mode: str = "interp",
+        cwd: str | None = None,
+        output_consumer=None,
+        input_provider=None,
+    ) -> tuple[bool, list[str], str | None]:
+        cwd_value = self.cwd if cwd is None else cwd
+        source_name = name.lstrip("/")
         runtime_source = self.fs.read_file("system/runtime.peb")
-        source = runtime_source + "\n" + self.fs.read_file(name)
+        source = runtime_source + "\n" + self.fs.read_file(source_name)
         initial_globals = {
             "ARGV": extra_args,
             "ARGC": len(extra_args),
             "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
             "FS_MODE": self.fs_mode,
+            "CWD": cwd_value,
         }
+        provider = input if input_provider is None else input_provider
         if exec_mode == "bytecode":
             interpreter = PebbleBytecodeInterpreter(
                 self.fs.root,
-                input_provider=input,
-                output_consumer=None,
-                path_resolver=self.fs.resolve_path,
+                input_provider=provider,
+                output_consumer=output_consumer or (lambda text: print(text, flush=True)),
+                path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, cwd_value)),
                 host_functions=self._make_runtime(consume_output=False).host_functions,
             )
         else:
-            interpreter = self._make_runtime(consume_output=False)
+            interpreter = PebbleInterpreter(
+                self.fs.root,
+                input_provider=provider,
+                output_consumer=output_consumer or (lambda text: print(text, flush=True)),
+                path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, cwd_value)),
+                host_functions=self._make_runtime(consume_output=False).host_functions,
+            )
         interactive_program = name in {"nano.peb", "system/nano.peb"}
         if interactive_program and extra_args:
             target_file = extra_args[0]
-            self.fs.resolve_path(target_file)
+            self._logical_path_to_host(self._normalize_user_path(target_file, cwd_value))
             try:
-                file_content = self.fs.read_file(target_file)
+                file_content = self.fs.read_file(target_file.lstrip("/"))
             except FileSystemError:
                 file_content = ""
             initial_globals["TARGET_FILE"] = target_file
             initial_globals["FILE_CONTENT"] = file_content
 
-        output = interpreter.execute(source, initial_globals=initial_globals)
-        if not output:
-            if not interactive_program:
-                print("(no output)")
-            return
-        for line in output:
-            print(line)
+        try:
+            output = interpreter.execute(source, initial_globals=initial_globals)
+        except KeyboardInterrupt:
+            return interactive_program, [], "__interrupt__"
+        except (FileSystemError, PebbleError) as exc:
+            return interactive_program, [], str(exc)
+        return interactive_program, output, None
+
+    def _start_background_job(self, name: str, extra_args: list[str], exec_mode: str) -> int:
+        if name in {"nano.peb", "system/nano.peb"}:
+            raise PebbleError("interactive programs cannot run in the background")
+        program = self._normalize_user_path(name)
+        cwd_value = self.cwd
+        with self._jobs_lock:
+            job_id = self._next_job_id
+            self._next_job_id = self._next_job_id + 1
+            job = BackgroundJob(
+                job_id=job_id,
+                command=("execbg" if exec_mode == "bytecode" else "runbg") + " " + program,
+                program=program,
+                argv=list(extra_args),
+                exec_mode=exec_mode,
+                cwd=cwd_value,
+            )
+            self._jobs[job_id] = job
+
+        def worker() -> None:
+            try:
+                _, _, error = self._execute_program(
+                    job.program,
+                    job.argv,
+                    exec_mode=job.exec_mode,
+                    cwd=job.cwd,
+                    output_consumer=job.outputs.append,
+                    input_provider=lambda prompt="": (_ for _ in ()).throw(
+                        PebbleError("input() is not available in background jobs")
+                    ),
+                )
+                with self._jobs_lock:
+                    if error is None:
+                        job.status = "done"
+                    elif error == "__interrupt__":
+                        job.status = "interrupted"
+                    else:
+                        job.status = "error"
+                        job.error = error
+            except Exception as exc:
+                with self._jobs_lock:
+                    job.status = "error"
+                    job.error = str(exc)
+
+        thread = threading.Thread(target=worker, name=f"pebble-job-{job_id}", daemon=True)
+        job.thread = thread
+        thread.start()
+        return job_id
+
+    def _list_background_jobs(self) -> list[str]:
+        with self._jobs_lock:
+            jobs = [self._jobs[key] for key in sorted(self._jobs)]
+        lines: list[str] = []
+        for job in jobs:
+            status = job.status
+            if status == "running" and job.thread is not None and not job.thread.is_alive():
+                status = "done"
+                job.status = "done"
+            lines.append(f"[{job.job_id}] {status} {job.command}")
+        return lines
+
+    def _foreground_job(self, job_id: int) -> list[str]:
+        with self._jobs_lock:
+            job = self._jobs.get(job_id)
+        if job is None:
+            raise PebbleError(f"job {job_id} does not exist")
+        if job.thread is not None and job.thread.is_alive():
+            job.thread.join()
+        with self._jobs_lock:
+            self._jobs.pop(job_id, None)
+        lines = list(job.outputs)
+        if job.error is not None:
+            lines.append(job.error)
+        if len(lines) == 0 and job.status == "done":
+            lines.append("(no output)")
+        lines.append(f"[{job.job_id}] {job.status}")
+        return lines
 
     def _require_string_arg(
         self,
@@ -455,6 +1009,78 @@ class PebbleShell(cmd.Cmd):
         if not isinstance(args[0], str) or not isinstance(args[1], str):
             raise PebbleError(f"line {line_number}: {name}() expects string arguments")
         return args[0], args[1]
+
+    def _resolve_user_path_to_host(self, name: str) -> Path:
+        return self._logical_path_to_host(self._normalize_user_path(name))
+
+    def _resolve_storage_path_to_host(self, name: str) -> Path:
+        if name.startswith("/"):
+            logical = name
+        elif name:
+            logical = "/" + name
+        else:
+            logical = "/"
+        return self._logical_path_to_host(logical)
+
+    def _to_fs_name(self, name: str) -> str:
+        logical = self._normalize_user_path(name)
+        if logical == "/":
+            raise FileSystemError("root is a directory")
+        return logical.lstrip("/")
+
+    def _normalize_user_path(self, name: str, cwd: str | None = None) -> str:
+        cleaned = name.strip()
+        if not cleaned:
+            raise FileSystemError("file name cannot be empty")
+        if "\\" in cleaned:
+            raise FileSystemError("invalid file name")
+        absolute = cleaned.startswith("/")
+        raw_parts = cleaned.split("/")
+        if absolute:
+            raw_parts = raw_parts[1:]
+        elif raw_parts and raw_parts[0] in self.fs.mounts:
+            absolute = True
+        parts: list[str] = []
+        cwd_value = self.cwd if cwd is None else cwd
+        if not absolute and cwd_value != "/":
+            parts = cwd_value.strip("/").split("/")
+        for part in raw_parts:
+            if part == "" or part == ".":
+                if part == "":
+                    raise FileSystemError("invalid file path")
+                continue
+            if part == "..":
+                if not parts:
+                    raise FileSystemError("file path escapes the Pebble OS root")
+                parts.pop()
+                continue
+            parts.append(part)
+        if not parts:
+            return "/"
+        return "/" + "/".join(parts)
+
+    def _logical_path_to_host(self, logical_path: str) -> Path:
+        if logical_path == "/":
+            return self.fs.root
+        parts = logical_path.strip("/").split("/")
+        first = parts[0]
+        if first in self.fs.mounts:
+            host_root = self.fs.mounts[first]
+            if len(parts) == 1:
+                return host_root
+            path = (host_root / "/".join(parts[1:])).resolve()
+            try:
+                path.relative_to(host_root)
+            except ValueError as exc:
+                raise FileSystemError("mounted file path escapes its mount root") from exc
+            return path
+        root = self.fs.root.resolve()
+        path = (root / "/".join(parts)).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise FileSystemError("file path escapes the Pebble OS root") from exc
+        return path
 
     def onecmd(self, line: str) -> bool | None:
         try:

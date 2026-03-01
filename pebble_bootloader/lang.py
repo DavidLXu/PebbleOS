@@ -278,6 +278,19 @@ class BytecodeFunction:
     line_number: int
 
 
+@dataclass
+class VMFrame:
+    name: str
+    locals: dict[str, "Value"]
+    line_number: int
+
+
+@dataclass
+class VMState:
+    value_stack: list["Value"]
+    frame_stack: list[VMFrame]
+
+
 class ReturnSignal(Exception):
     def __init__(self, value: Value) -> None:
         super().__init__()
@@ -820,7 +833,12 @@ class PebbleInterpreter:
     def execute(self, source: str, initial_globals: dict[str, Value] | None = None) -> list[str]:
         statements = Parser(source).parse()
         self.output: list[str] = []
-        self.globals: dict[str, Value] = {}
+        self.globals: dict[str, Value] = {
+            "CWD": "/",
+            "FS_MODE": "hostfs",
+            "MFS_READY": 0,
+            "MFS_DB": {"files": {}},
+        }
         self.functions: dict[str, UserFunction] = {}
         self.module_cache: dict[str, ModuleObject] = {}
         self.module_loading: set[str] = set()
@@ -1107,6 +1125,7 @@ class PebbleInterpreter:
             self._require_arity(expr, args, 2)
             path = self._resolve_file_arg(args[0], line_number)
             text = self._coerce_to_text(args[1], line_number)
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
             return text
 
@@ -1262,6 +1281,49 @@ class PebbleInterpreter:
                     "seed": "random_seed",
                     "next": "random_next",
                     "range": "random_range",
+                },
+                {},
+                {},
+            )
+            self.module_cache[name] = module
+            return module
+        if name == "memory":
+            module = ModuleObject(
+                "memory",
+                {
+                    "init": "memory_init",
+                    "size": "memory_size",
+                    "read": "memory_read",
+                    "write": "memory_write",
+                    "clear": "memory_clear",
+                    "fill": "memory_fill",
+                    "copy": "memory_copy",
+                    "slice": "memory_slice",
+                    "store": "memory_store",
+                    "dump": "memory_dump",
+                    "alloc": "memory_alloc",
+                    "top": "memory_top",
+                },
+                {},
+                {},
+            )
+            self.module_cache[name] = module
+            return module
+        if name == "heap":
+            module = ModuleObject(
+                "heap",
+                {
+                    "init": "heap_init",
+                    "capacity": "heap_capacity",
+                    "used": "heap_used",
+                    "count": "heap_count",
+                    "alloc": "heap_alloc",
+                    "kind": "heap_kind",
+                    "size": "heap_size",
+                    "read": "heap_read",
+                    "write": "heap_write",
+                    "store": "heap_store",
+                    "slice": "heap_slice",
                 },
                 {},
                 {},
@@ -1430,8 +1492,8 @@ class PebbleInterpreter:
                 return self.path_resolver(name)
             except Exception as exc:
                 raise PebbleError(f"line {line_number}: {exc}") from exc
-        if "/" in name or "\\" in name or name in {".", ".."}:
-            raise PebbleError(f"line {line_number}: file name must stay within the flat filesystem")
+        if "\\" in name or name in {".", ".."} or any(part in {"", ".", ".."} for part in name.split("/")):
+            raise PebbleError(f"line {line_number}: file path must stay within the Pebble OS root")
         return self.fs_root / name
 
     def _emit_output(self, text: str) -> None:
@@ -1451,6 +1513,7 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
         self.functions: dict[str, BytecodeFunction] = {}
         self.module_cache: dict[str, ModuleObject] = {}
         self.module_loading: set[str] = set()
+        self.vm_state = VMState(value_stack=[], frame_stack=[])
         self.fs_root.mkdir(parents=True, exist_ok=True)
         if initial_globals:
             for name, value in initial_globals.items():
@@ -1560,7 +1623,8 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
         raise PebbleError("unknown assignment target")
 
     def _eval_compiled_expr(self, code: list[tuple], local_env: dict[str, Value] | None) -> Value:
-        stack: list[Value] = []
+        stack = self.vm_state.value_stack
+        base = len(stack)
         for instr in code:
             op = instr[0]
             if op == "CONST":
@@ -1646,9 +1710,12 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
                         raise PebbleError(f"line {instr[1]}: index out of range") from exc
             else:
                 raise PebbleError(f"line {instr[-1]}: unknown expression opcode '{op}'")
-        if len(stack) != 1:
+        if len(stack) != base + 1:
             raise PebbleError("invalid bytecode expression state")
-        return stack[0]
+        result = stack.pop()
+        if len(stack) != base:
+            raise PebbleError("bytecode value stack leak")
+        return result
 
     def _call_builtin_args(self, name: str, args: list[Value], line_number: int) -> Value:
         expr = CallExpr(name=name, args=[], line_number=line_number)
@@ -1762,8 +1829,11 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
                 f"{len(function.params)} arguments but got {len(args)}"
             )
         frame = {name: self._clone_value(value) for name, value in zip(function.params, args)}
+        self.vm_state.frame_stack.append(VMFrame(name=name, locals=frame, line_number=line_number))
         try:
             self._execute_code(function.code, frame)
         except ReturnSignal as signal:
             return self._clone_value(signal.value)
+        finally:
+            self.vm_state.frame_stack.pop()
         return 0

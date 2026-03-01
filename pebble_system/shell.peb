@@ -2,18 +2,28 @@ def shell_name():
     return "Pebble Runtime Shell"
 
 def shell_prompt():
-    return "pebble-os> "
+    return "pebble-os:" + cwd() + "> "
 
 def shell_intro():
-    return "Pebble OS shell\nFilesystem mode: " + active_fs_mode() + "\nFlat filesystem: one folder, no subdirectories\nType 'help' for commands."
+    return "Pebble OS shell\nFilesystem mode: " + active_fs_mode() + "\nFilesystem: rooted paths with directories\nType 'help' for commands."
 
 def shell_dispatch(command, args):
     if command == "help":
         return command_help(args)
     elif command == "ls":
         return command_ls(args)
+    elif command == "cd":
+        return command_cd(args)
+    elif command == "pwd":
+        return command_pwd(args)
+    elif command == "mkdir":
+        return command_mkdir(args)
+    elif command == "rmdir":
+        return command_rmdir(args)
     elif command == "time":
         return command_time(args)
+    elif command == "sync":
+        return command_sync(args)
     elif command == "touch":
         return command_touch(args)
     elif command == "edit":
@@ -28,8 +38,16 @@ def shell_dispatch(command, args):
         return command_mv(args)
     elif command == "run":
         return command_run(args)
+    elif command == "runbg":
+        return command_runbg(args)
     elif command == "exec":
         return command_exec(args)
+    elif command == "execbg":
+        return command_execbg(args)
+    elif command == "jobs":
+        return command_jobs(args)
+    elif command == "fg":
+        return command_fg(args)
     elif command == "nano":
         return command_nano(args)
     elif command == "lang":
@@ -45,7 +63,12 @@ def command_help(args):
         print "Pebble OS commands:"
         print "  help [command]  show runtime-managed help"
         print "  ls              list visible files with timestamps"
+        print "  cd PATH         change the current directory"
+        print "  pwd             print the current directory"
+        print "  mkdir PATH      create a directory"
+        print "  rmdir PATH      remove an empty directory"
         print "  time            show the current local time"
+        print "  sync            write the memory filesystem snapshot to disk"
         print "  touch NAME...   create empty files if needed"
         print "  edit NAME       replace a file"
         print "  cat NAME        show a file"
@@ -53,7 +76,11 @@ def command_help(args):
         print "  cp SRC DST      copy a file"
         print "  mv SRC DST      move or rename a file"
         print "  run FILE [ARG]  run a Pebble program in interpreter mode"
+        print "  runbg FILE [A]  run a non-interactive Pebble program in the background"
         print "  exec FILE [ARG] run a Pebble program in bytecode mode"
+        print "  execbg FILE [A] run a non-interactive bytecode Pebble program in the background"
+        print "  jobs            list background jobs"
+        print "  fg ID           wait for a background job and print its output"
         print "  nano NAME       open the Pebble editor"
         print "  lang            show Pebble language syntax"
         print "  exit            leave Pebble OS"
@@ -66,9 +93,24 @@ def command_help(args):
     elif topic == "ls":
         print "ls"
         print "show all visible files in the active filesystem backend"
+    elif topic == "cd":
+        print "cd PATH"
+        print "change the current directory"
+    elif topic == "pwd":
+        print "pwd"
+        print "print the current directory"
+    elif topic == "mkdir":
+        print "mkdir PATH"
+        print "create a directory"
+    elif topic == "rmdir":
+        print "rmdir PATH"
+        print "remove an empty directory and warn if it contains files"
     elif topic == "time":
         print "time"
         print "show the current local time as YYYY-MM-DD, HH:MM"
+    elif topic == "sync":
+        print "sync"
+        print "write the current memory filesystem snapshot to .__pebble_vfs__.db"
     elif topic == "touch":
         print "touch NAME..."
         print "create empty files if they do not exist"
@@ -90,9 +132,21 @@ def command_help(args):
     elif topic == "run":
         print "run FILE [ARGS...]"
         print "run a Pebble program with ARGV and ARGC in interpreter mode"
+    elif topic == "runbg":
+        print "runbg FILE [ARGS...]"
+        print "run a non-interactive Pebble program in the background"
     elif topic == "exec":
         print "exec FILE [ARGS...]"
         print "run a Pebble program with ARGV and ARGC in bytecode mode"
+    elif topic == "execbg":
+        print "execbg FILE [ARGS...]"
+        print "run a non-interactive bytecode Pebble program in the background"
+    elif topic == "jobs":
+        print "jobs"
+        print "list background jobs started by Pebble OS"
+    elif topic == "fg":
+        print "fg ID"
+        print "wait for a background job, print its output, and remove it from the job table"
     elif topic == "nano":
         print "nano NAME"
         print "open the runtime nano editor from system/nano.peb"
@@ -118,11 +172,56 @@ def command_ls(args):
         print file_time(name) + "  " + name
     return 0
 
+def command_cd(args):
+    if len(args) != 1:
+        print "cd requires exactly one path"
+        return 0
+    return chdir(args[0])
+
+def command_pwd(args):
+    if len(args) != 0:
+        print "this command does not take arguments"
+        return 0
+    print cwd()
+    return 0
+
+def command_mkdir(args):
+    if len(args) != 1:
+        print "mkdir requires exactly one path"
+        return 0
+    make_directory(args[0])
+    return 0
+
+def command_rmdir(args):
+    if len(args) != 1:
+        print "rmdir requires exactly one path"
+        return 0
+    name = args[0]
+    if not directory_exists(name):
+        print "directory '" + name + "' does not exist"
+        return 0
+    if not directory_empty(name):
+        print "notice: directory '" + name + "' is not empty"
+        return 0
+    remove_directory(name)
+    return 0
+
 def command_time(args):
     if len(args) != 0:
         print "this command does not take arguments"
         return 0
     print current_time()
+    return 0
+
+def command_sync(args):
+    if len(args) != 0:
+        print "this command does not take arguments"
+        return 0
+    if active_fs_mode() != "mfs" and active_fs_mode() != "mfs-import":
+        print "sync is only available in mfs and mfs-import"
+        return 0
+    sync_filesystem()
+    print "synced memory filesystem to .__pebble_vfs__.db"
     return 0
 
 def command_touch(args):
@@ -220,7 +319,7 @@ def command_run(args):
     if len(args) == 0:
         print "a file name is required"
         return 0
-    program = args[0]
+    program = resolved_path(args[0])
     extra = rest(args)
     return dispatch_program(program, extra, "run")
 
@@ -228,9 +327,50 @@ def command_exec(args):
     if len(args) == 0:
         print "a file name is required"
         return 0
-    program = args[0]
+    program = resolved_path(args[0])
     extra = rest(args)
     return dispatch_program(program, extra, "exec")
+
+def command_runbg(args):
+    if len(args) == 0:
+        print "a file name is required"
+        return 0
+    program = resolved_path(args[0])
+    extra = rest(args)
+    return dispatch_background_program(program, extra, "interp")
+
+def command_execbg(args):
+    if len(args) == 0:
+        print "a file name is required"
+        return 0
+    program = resolved_path(args[0])
+    extra = rest(args)
+    return dispatch_background_program(program, extra, "bytecode")
+
+def command_jobs(args):
+    if len(args) != 0:
+        print "this command does not take arguments"
+        return 0
+    lines = list_background_jobs()
+    if len(lines) == 0:
+        print "(no jobs)"
+        return 0
+    i = 0
+    while i < len(lines):
+        print lines[i]
+        i = i + 1
+    return 0
+
+def command_fg(args):
+    if len(args) != 1:
+        print "fg requires exactly one job id"
+        return 0
+    lines = foreground_job(int(args[0]))
+    i = 0
+    while i < len(lines):
+        print lines[i]
+        i = i + 1
+    return 0
 
 def dispatch_program(program, extra, mode):
     if not file_exists(program):
@@ -250,11 +390,22 @@ def dispatch_program(program, extra, mode):
     raw_delete_file(VFS_RUN_SHADOW_FILE)
     return 0
 
+def dispatch_background_program(program, extra, mode):
+    if not file_exists(program):
+        print "file '" + program + "' does not exist"
+        return 0
+    if is_system_path(program) == 0 and fs_run_uses_shadow():
+        print "background jobs currently require host-backed or system programs"
+        return 0
+    job_id = start_background_job(program, extra, mode)
+    print "[" + str(job_id) + "] " + program
+    return 0
+
 def command_nano(args):
     if len(args) != 1:
         print "a file name is required"
         return 0
-    name = args[0]
+    name = resolved_path(args[0])
     if is_system_path(name) or fs_run_uses_shadow() == 0:
         run_program("system/nano.peb", [name])
         return 0
@@ -301,12 +452,16 @@ def command_lang(args):
     print "  import os"
     print "  import text"
     print "  import random"
+    print "  import memory"
+    print "  import heap"
     print "Operators: +  -  *  /  <  >  ==  !=  <=  >=  and parentheses for grouping"
     print "Values: integers, floats, strings, lists, dicts, variables, indexing, and function calls"
     print "Builtins: len, append, range, read_file, write_file, str, int, float, input, argv, keys"
-    print "Modules: math, os, text, random"
-    print "Module calls: math.sin(...), os.read(...), text.lines(...), random.range(...)"
+    print "Modules: math, os, text, random, memory, heap"
+    print "Module calls: math.sin(...), os.read(...), text.lines(...), random.range(...), memory.read(...), heap.alloc(...)"
     print "Runtime math: abs(x), pow(x, n), sqrt(x), sin(deg), cos(deg), tan(deg)"
+    print "Runtime RAM: memory.init(n), memory.copy(src, dst, n), memory.slice(base, n), memory.alloc(n)"
+    print "Runtime heap: heap.init(n), heap.alloc(kind, payload), heap.read(ptr, i), heap.write(ptr, i, value)"
     print "Trig returns fixed-point integers scaled by 10000"
     return 0
 
@@ -323,3 +478,6 @@ def rest(items):
         append(out, items[i])
         i = i + 1
     return out
+
+def resolved_path(name):
+    return storage_name(normalize_path(name))

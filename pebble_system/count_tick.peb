@@ -1,0 +1,11 @@
+print "COUNT TICK  Press Q to quit"
+
+value = 1
+running = 1
+
+while running:
+    print value
+    value = value + 1
+    key = read_key_timeout(1000)
+    if key == "q" or key == "Q" or key == "ESC":
+        running = 0

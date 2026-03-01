@@ -30,9 +30,10 @@ class FlatFileSystemTests(unittest.TestCase):
         self.fs.delete_file("program.peb")
         self.assertEqual(self.fs.list_files(), [])
 
-    def test_rejects_subdirectories(self) -> None:
-        with self.assertRaises(FileSystemError):
-            self.fs.create_file("dir/program.peb", "")
+    def test_supports_subdirectories(self) -> None:
+        self.fs.create_file("dir/program.peb", "print 1")
+        self.assertEqual(self.fs.read_file("dir/program.peb"), "print 1")
+        self.assertIn("dir/program.peb", self.fs.list_files())
 
     def test_supports_mounted_paths(self) -> None:
         mount_dir = Path(self.temp_dir.name) / "mounted"
@@ -55,7 +56,7 @@ class FlatFileSystemTests(unittest.TestCase):
         target = self.fs.resolve_path("clock.txt")
         with patch("pebble_bootloader.fs.datetime") as mock_datetime:
             mock_datetime.fromtimestamp.return_value = datetime(2026, 3, 1, 15, 45, 30)
-            self.assertEqual(self.fs.file_time("clock.txt"), "2026-03-01, 15:45")
+            self.assertEqual(self.fs.file_time("clock.txt"), "2026-03-01, 15:45:30")
             mock_datetime.fromtimestamp.assert_called_once_with(target.stat().st_mtime)
 
 
@@ -394,7 +395,7 @@ class PebbleInterpreterTests(unittest.TestCase):
                         args[1],
                     )[1],
                     "raw_delete_file": lambda args, line: (Path(temp_dir) / args[0]).unlink() or 0,
-                    "raw_file_time": lambda args, line: "2026-03-01, 16:30",
+                    "raw_file_time": lambda args, line: "2026-03-01, 16:30:45",
                 },
             ).execute(
                 runtime_source
@@ -417,6 +418,87 @@ class PebbleInterpreterTests(unittest.TestCase):
                 initial_globals={"FS_MODE": "hostfs"},
             )
         self.assertEqual(output, ["alpha", "xxx", "2", "7", "3", "hi", "1", "hi"])
+
+    def test_import_memory_module_provides_virtual_ram(self) -> None:
+        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        output = PebbleInterpreter(
+            host_functions={
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+            }
+        ).execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    "import memory",
+                    "print memory.init(8)",
+                    "a = memory.alloc(3)",
+                    "print a",
+                    "print memory.top()",
+                    "print memory.write(a + 1, 42)",
+                    "print memory.read(a + 1)",
+                    "print memory.fill(7)",
+                    "print memory.read(0)",
+                    "print memory.clear()",
+                    "print memory.read(0)",
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["8", "0", "3", "42", "42", "8", "7", "8", "0"])
+
+    def test_import_memory_module_supports_block_operations(self) -> None:
+        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        output = PebbleInterpreter(
+            host_functions={
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+            }
+        ).execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    "import memory",
+                    "memory.init(6)",
+                    "memory.store(0, [4, 5, 6])",
+                    "print memory.slice(0, 3)",
+                    "print memory.copy(0, 3, 3)",
+                    "print memory.slice(3, 3)",
+                    "print memory.dump()",
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["[4, 5, 6]", "3", "[4, 5, 6]", "[4, 5, 6, 4, 5, 6]"])
+
+    def test_import_heap_module_allocates_objects(self) -> None:
+        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        output = PebbleInterpreter(
+            host_functions={
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+            }
+        ).execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    "import heap",
+                    "print heap.init(12)",
+                    'obj = heap.alloc("pair", 2)',
+                    "print obj",
+                    "print heap.kind(obj)",
+                    "print heap.size(obj)",
+                    "print heap.write(obj, 0, 7)",
+                    "print heap.write(obj, 1, 9)",
+                    "print heap.read(obj, 1)",
+                    "print heap.slice(obj)",
+                    "print heap.used()",
+                    "print heap.count()",
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["12", "0", "pair", "2", "7", "9", "9", "[7, 9]", "4", "1"])
 
     def test_supports_file_based_module_imports(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -510,6 +592,72 @@ class PebbleInterpreterTests(unittest.TestCase):
         )
         self.assertEqual(output, ["a\nb", "7", "3"])
 
+    def test_bytecode_mode_supports_import_memory(self) -> None:
+        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        output = PebbleBytecodeInterpreter(
+            host_functions={
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+            }
+        ).execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    "import memory",
+                    "print memory.init(4)",
+                    "base = memory.alloc(2)",
+                    "print base",
+                    "print memory.write(base, 1.5)",
+                    "print memory.read(base)",
+                    "print memory.top()",
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["4", "0", "1.5", "1.5", "2"])
+
+    def test_bytecode_mode_supports_memory_blocks_and_heap(self) -> None:
+        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        output = PebbleBytecodeInterpreter(
+            host_functions={
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+            }
+        ).execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    "import memory",
+                    "import heap",
+                    "memory.init(8)",
+                    "memory.store(0, [1, 2, 3])",
+                    "print memory.copy(0, 4, 3)",
+                    "print memory.slice(4, 3)",
+                    "print heap.init(10)",
+                    'obj = heap.alloc("vec", 3)',
+                    'print heap.store(obj, [8, 9, 10])',
+                    "print heap.slice(obj)",
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["3", "[1, 2, 3]", "10", "3", "[8, 9, 10]"])
+
+    def test_bytecode_vm_tracks_frame_stack(self) -> None:
+        interpreter = PebbleBytecodeInterpreter()
+        output = interpreter.execute(
+            "\n".join(
+                [
+                    "def add_one(x):",
+                    "    return x + 1",
+                    "print add_one(4)",
+                ]
+            )
+        )
+        self.assertEqual(output, ["5"])
+        self.assertEqual(len(interpreter.vm_state.frame_stack), 0)
+        self.assertEqual(len(interpreter.vm_state.value_stack), 0)
+
     def test_bytecode_mode_supports_file_based_module_imports(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             module_path = Path(temp_dir) / "mymodule.peb"
@@ -557,10 +705,10 @@ class PebbleInterpreterTests(unittest.TestCase):
                 "raw_create_file": lambda args, line: 0,
                 "raw_modify_file": lambda args, line: 0,
                 "raw_delete_file": lambda args, line: 0,
-                "raw_file_time": lambda args, line: "2026-03-01, 15:30",
+                "raw_file_time": lambda args, line: "2026-03-01, 15:30:00",
                 "raw_read_file": lambda args, line: "",
                 "raw_write_file": lambda args, line: args[1],
-                "current_time": lambda args, line: "2026-03-01, 15:30",
+                "current_time": lambda args, line: "2026-03-01, 15:30:00",
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             },
         )
@@ -586,6 +734,53 @@ class PebbleInterpreterTests(unittest.TestCase):
 
 
 class PebbleShellRuntimeTests(unittest.TestCase):
+    def test_run_program_is_interrupted_by_control_c(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("interrupt_test.peb")
+        target.write_text('value = input("number: ")\nprint value\n', encoding="utf-8")
+        outputs: list[str] = []
+
+        try:
+            with patch("builtins.input", side_effect=KeyboardInterrupt):
+                with patch(
+                    "builtins.print",
+                    side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                ):
+                    shell.onecmd("run interrupt_test.peb")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertIn("^C", outputs)
+        self.assertIn("[system] program interrupted", outputs)
+
+    def test_term_read_key_maps_f1_to_suspend_and_resume(self) -> None:
+        shell = build_shell()
+        chars = iter(["\x1b", "O", "P", "a"])
+
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdin.fileno", return_value=0):
+            with patch("sys.stdin.read", side_effect=lambda size=1: next(chars)):
+                with patch("select.select", side_effect=[([object()], [], []), ([object()], [], [])]):
+                    with patch("termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0]), patch(
+                        "termios.tcsetattr", return_value=None
+                    ), patch("tty.setraw", return_value=None), patch.object(shell, "_suspend_process") as suspend:
+                        key = shell._read_terminal_key(1, None)
+
+        self.assertEqual(key, "a")
+        suspend.assert_called_once()
+
+    def test_term_read_key_maps_escape_to_interrupt(self) -> None:
+        shell = build_shell()
+
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdin.fileno", return_value=0):
+            with patch("sys.stdin.read", return_value="\x1b"):
+                with patch("select.select", return_value=([], [], [])):
+                    with patch("termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0]), patch(
+                        "termios.tcsetattr", return_value=None
+                    ), patch("tty.setraw", return_value=None):
+                        with self.assertRaises(KeyboardInterrupt):
+                            shell._read_terminal_key(1, None)
+
     def test_runtime_shell_handles_help_ls_and_exit(self) -> None:
         shell = build_shell()
         outputs: list[str] = []
@@ -596,6 +791,117 @@ class PebbleShellRuntimeTests(unittest.TestCase):
 
         self.assertIn("Pebble OS commands:", outputs)
         self.assertTrue(should_exit)
+
+    def test_shell_tab_completion_suggests_command_names(self) -> None:
+        shell = build_shell()
+        matches = shell.completenames("ru")
+
+        self.assertIn("run", matches)
+        self.assertIn("runbg", matches)
+
+    def test_shell_tab_completion_suggests_paths_and_directories(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("completion_docs/readme.peb")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("print 1", encoding="utf-8")
+        shell.fs.resolve_path("completion_docs/subdir").mkdir(parents=True, exist_ok=True)
+
+        try:
+            file_matches = shell.completedefault("com", "cat com", 4, 7)
+            dir_matches = shell.completedefault("com", "cd com", 3, 6)
+        finally:
+            if target.exists():
+                target.unlink()
+            subdir = shell.fs.resolve_path("completion_docs/subdir")
+            if subdir.exists():
+                subdir.rmdir()
+            root_dir = shell.fs.resolve_path("completion_docs")
+            if root_dir.exists():
+                root_dir.rmdir()
+
+        self.assertIn("completion_docs/", dir_matches)
+        self.assertIn("completion_docs/", file_matches)
+
+    def test_shell_tab_completion_suggests_nested_paths(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("apps/completion_demo.peb")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('print "ok"', encoding="utf-8")
+
+        try:
+            matches = shell.completedefault("apps/com", "run apps/com", 4, 12)
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertIn("apps/completion_demo.peb", matches)
+
+    def test_shell_tab_completion_supports_fuzzy_for_ls_cd_run_and_exec(self) -> None:
+        shell = build_shell()
+        dir_path = shell.fs.resolve_path("fuzzy_remove_dir")
+        file_path = shell.fs.resolve_path("apps/fuzzy_demo_program.peb")
+        dir_path.mkdir(parents=True, exist_ok=True)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text('print "ok"', encoding="utf-8")
+
+        try:
+            ls_matches = shell.completedefault("remove", "ls remove", 3, 9)
+            cd_matches = shell.completedefault("remove", "cd remove", 3, 9)
+            run_matches = shell.completedefault("demo", "run demo", 4, 8)
+            exec_matches = shell.completedefault("demo", "exec demo", 5, 9)
+        finally:
+            if file_path.exists():
+                file_path.unlink()
+            if dir_path.exists():
+                dir_path.rmdir()
+
+        self.assertIn("fuzzy_remove_dir/", ls_matches)
+        self.assertIn("fuzzy_remove_dir/", cd_matches)
+        self.assertIn("apps/fuzzy_demo_program.peb", run_matches)
+        self.assertIn("apps/fuzzy_demo_program.peb", exec_matches)
+
+    def test_shell_tab_completion_suggests_foreground_job_ids(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("bg_complete.peb")
+        target.write_text('print "done"\n', encoding="utf-8")
+
+        try:
+            shell.onecmd("runbg bg_complete.peb")
+            matches = shell.completedefault("", "fg ", 3, 3)
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertIn("1", matches)
+
+    def test_background_jobs_can_be_started_listed_and_foregrounded(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("bg_test.peb")
+        target.write_text('print "job output"\n', encoding="utf-8")
+        outputs: list[str] = []
+
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("runbg bg_test.peb")
+                shell.onecmd("jobs")
+                shell.onecmd("fg 1")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertTrue(any(line.startswith("[1] bg_test.peb") for line in outputs))
+        self.assertTrue(any("[1] " in line and "runbg /bg_test.peb" in line for line in outputs))
+        self.assertIn("job output", outputs)
+        self.assertIn("[1] done", outputs)
+
+    def test_background_jobs_reject_interactive_programs(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("runbg system/nano.peb note.txt")
+
+        self.assertTrue(any("interactive programs cannot run in the background" in line for line in outputs))
 
     def test_runtime_touch_matches_linux_style_create_empty_without_overwrite(self) -> None:
         shell = build_shell()
@@ -615,6 +921,128 @@ class PebbleShellRuntimeTests(unittest.TestCase):
             if target.exists():
                 target.unlink()
 
+    def test_runtime_cd_pwd_and_prompt_follow_current_directory(self) -> None:
+        shell = build_shell()
+        shell.onecmd("touch dir_cd_test/file.txt")
+        shell.onecmd("cd dir_cd_test")
+        shell.postcmd(False, "cd dir_cd_test")
+
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("pwd")
+
+        self.assertEqual(outputs[-1], "/dir_cd_test")
+        self.assertEqual(shell.prompt, "pebble-os:/dir_cd_test> ")
+
+    def test_ls_hides_system_mount_outside_root_directory(self) -> None:
+        shell = build_shell()
+        shell.onecmd("touch dir_cd_test/file.txt")
+        shell.onecmd("cd dir_cd_test")
+        shell.postcmd(False, "cd dir_cd_test")
+
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("ls")
+
+        self.assertTrue(any("file.txt" in line for line in outputs))
+        self.assertFalse(any("system/" in line for line in outputs))
+
+    def test_ls_shows_system_files_when_inside_system_directory(self) -> None:
+        shell = build_shell()
+        shell.onecmd("cd system")
+        shell.postcmd(False, "cd system")
+
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("ls")
+
+        self.assertTrue(any("runtime.peb" in line for line in outputs))
+        self.assertFalse(any("system/runtime.peb" in line for line in outputs))
+
+    def test_runtime_mkdir_and_rmdir_notice_for_non_empty_directory(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("mkdir dir_remove_test")
+            shell.onecmd("touch dir_remove_test/file.txt")
+            shell.onecmd("rmdir dir_remove_test")
+
+        self.assertTrue(shell.fs.resolve_path("dir_remove_test").is_dir())
+        self.assertIn("notice: directory 'dir_remove_test' is not empty", outputs)
+
+    def test_vfs_cd_pwd_and_rmdir_notice_for_non_empty_directory(self) -> None:
+        shell = build_shell(fs_mode="vfs-persistent")
+        outputs: list[str] = []
+
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("mkdir vfs_dir")
+            shell.onecmd("touch vfs_dir/file.txt")
+            shell.onecmd("cd vfs_dir")
+            shell.postcmd(False, "cd vfs_dir")
+            shell.onecmd("pwd")
+            shell.onecmd("cd /")
+            shell.postcmd(False, "cd /")
+            shell.onecmd("rmdir vfs_dir")
+
+        self.assertIn("/vfs_dir", outputs)
+        self.assertIn("notice: directory 'vfs_dir' is not empty", outputs)
+        self.assertEqual(shell.prompt, "pebble-os:/> ")
+
+    def test_mfs_keeps_changes_in_memory_during_session(self) -> None:
+        shell = build_shell(fs_mode="mfs")
+        shell.onecmd("mkdir memdir")
+        shell.onecmd("touch memdir/file.txt")
+        shell.onecmd("cd memdir")
+        shell.postcmd(False, "cd memdir")
+
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("pwd")
+            shell.onecmd("ls")
+
+        self.assertIn("/memdir", outputs)
+        self.assertTrue(any("file.txt" in line for line in outputs))
+
+    def test_mfs_sync_writes_backing_store_snapshot(self) -> None:
+        shell = build_shell(fs_mode="mfs")
+        backing = shell.fs.resolve_path(".__pebble_vfs__.db")
+        if backing.exists():
+            backing.unlink()
+
+        outputs: list[str] = []
+        try:
+            shell.onecmd("touch sync_test.txt")
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("sync")
+            self.assertTrue(backing.exists())
+            self.assertIn("synced memory filesystem to .__pebble_vfs__.db", outputs)
+            self.assertIn("sync_test.txt", backing.read_text(encoding="utf-8"))
+        finally:
+            if backing.exists():
+                backing.unlink()
+
+    def test_mfs_import_loads_host_files_without_writing_backing_store(self) -> None:
+        shell = build_shell(fs_mode="mfs-import")
+        host_target = shell.fs.resolve_path("mfs_import_test.txt")
+        backing = shell.fs.resolve_path(".__pebble_vfs__.db")
+        if backing.exists():
+            backing.unlink()
+        host_target.write_text("from host", encoding="utf-8")
+        outputs: list[str] = []
+
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("cat mfs_import_test.txt")
+            self.assertIn("from host", outputs)
+            self.assertIsNotNone(shell.mfs_blob)
+            self.assertFalse(backing.exists())
+        finally:
+            if host_target.exists():
+                host_target.unlink()
+            if backing.exists():
+                backing.unlink()
+
     def test_runtime_time_shows_formatted_current_time(self) -> None:
         shell = build_shell()
         outputs: list[str] = []
@@ -627,7 +1055,7 @@ class PebbleShellRuntimeTests(unittest.TestCase):
             ):
                 shell.onecmd("time")
 
-        self.assertIn("2026-03-01, 15:30", outputs)
+        self.assertIn("2026-03-01, 15:30:45", outputs)
 
     def test_runtime_ls_shows_file_time_for_each_file(self) -> None:
         shell = build_shell()
@@ -686,6 +1114,25 @@ class PebbleShellRuntimeTests(unittest.TestCase):
                 target.unlink()
 
         self.assertIn("bytecode ok", outputs)
+
+    def test_runtime_boot_identifies_memory_filesystem(self) -> None:
+        shell = build_shell(fs_mode="mfs")
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        outputs = PebbleInterpreter(
+            shell.fs.root,
+            path_resolver=shell._resolve_user_path_to_host,
+            host_functions=shell._make_runtime(consume_output=False).host_functions,
+        ).execute(
+            runtime_source + "\nboot()\n",
+            initial_globals={
+                "FS_MODE": "mfs",
+                "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                "SYSTEM_SHELL_PATH": "system/shell.peb",
+                "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+            },
+        )
+
+        self.assertIn("[runtime] user filesystem: Pebble memory filesystem", outputs)
 
 
 

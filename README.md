@@ -2,87 +2,26 @@
 
 This project is a tiny operating system simulator with:
 
-- a flat filesystem where every file lives in one folder
+- a rooted filesystem with directories and mounted subtrees
 - selectable filesystem backends for fast host storage or Pebble-managed virtual storage
-- a shell with Linux-style commands for the flat Pebble OS filesystem
+- a shell with Linux-style commands for the Pebble OS filesystem
 - a tiny language called `Pebble`
+
+Detailed architecture notes:
+
+- filesystem: [FILESYSTEM.md](/Users/xulixin/LX_OS/FILESYSTEM.md)
+- memory/runtime: [MEMORY.md](/Users/xulixin/LX_OS/MEMORY.md)
+- language: [LANG.md](/Users/xulixin/LX_OS/LANG.md)
 
 ## Pebble language
 
-`Pebble` is line-based and uses Python-style blocks with exactly four spaces
-per indentation level.
+Pebble is the system language for Pebble OS. It supports Python-style
+four-space indentation, interpreter mode with `run`, bytecode mode with `exec`,
+built-in modules like `math`, `memory`, and `heap`, and file-based user
+modules.
 
-Statements:
-
-- `name = expression`
-- `items[index] = expression`
-- `print expression`
-- `import math`
-- `pass`
-- `break`
-- `continue`
-- `if expression:`
-- `elif expression:`
-- `else:`
-- `while expression:`
-- `for name in range(...):`
-- `def name(arg1, arg2):`
-- `return expression`
-
-Expressions support:
-
-- integer literals
-- float literals
-- `True`, `False`, `None`
-- string literals
-- list literals
-- dict literals
-- variables
-- function calls
-- indexing
-- parentheses
-- `+`
-- `-`
-- `*`
-- `/`
-- `<`
-- `>`
-- `==`
-- `!=`
-- `<=`
-- `>=`
-- `and`
-- `or`
-- `not`
-
-Example:
-
-```text
-data = []
-append(data, "peb")
-append(data, "ble")
-name = data[0] + data[1]
-
-i = 0
-while i < len(data):
-    print data[i]
-    i = i + 1
-
-write_file("hello.txt", name)
-print read_file("hello.txt")
-```
-
-Rules:
-
-- blocks must be indented by exactly four spaces
-- comparisons return `1` for true and `0` for false
-- `True`, `False`, and `None` follow Python-style truthiness
-- `dict` values support indexing and assignment with `data[key]`
-- `if`, `elif`, and `else` use integer truthiness: `0` is false, nonzero is true
-- `while` uses Python-style block syntax
-- `for` supports iterating over `range(...)`, list values, strings, and dict keys
-- file I/O stays inside the flat filesystem folder
-- builtins: `len`, `append`, `range`, `read_file`, `write_file`, `str`, `int`, `float`, `input`, `argv`, `keys`
+For the full syntax, builtins, modules, examples, and execution model, see
+[LANG.md](/Users/xulixin/LX_OS/LANG.md).
 
 ## Run the shell
 
@@ -94,11 +33,21 @@ You can choose the filesystem backend at boot:
 
 ```bash
 python3 main.py --fs-mode hostfs
+python3 main.py --fs-mode mfs
+python3 main.py --fs-mode mfs-import
 python3 main.py --fs-mode vfs-import
 python3 main.py --fs-mode vfs-persistent
 ```
 
 The default is `hostfs`.
+
+Filesystem modes:
+
+- `hostfs`: use the host-backed rooted filesystem directly
+- `mfs`: start with an empty Pebble memory filesystem for the current session
+- `mfs-import`: import host files into the Pebble memory filesystem, then keep running in memory
+- `vfs-import`: import host files into a Pebble VFS at boot, then run from the VFS
+- `vfs-persistent`: keep Pebble's virtual filesystem as the persistent source of truth
 
 Pebble OS also mounts the host system-runtime directory
 [`pebble_system/`](/Users/xulixin/LX_OS/pebble_system) as `system/...` for
@@ -116,116 +65,29 @@ and the default `nano` command now launches the runtime-managed editor in
 
 ## Filesystem Modes
 
-Pebble OS now has a unified Pebble-side filesystem API with multiple backends.
-Shell commands call the same Pebble functions for file operations, but those
-functions can target different storage modes.
+Pebble OS supports multiple filesystem backends behind one Pebble runtime API.
 
-### `hostfs`
+- `hostfs`: direct host-backed rooted filesystem with directories
+- `mfs`: empty in-memory Pebble filesystem for one session, with optional `sync`
+- `mfs-import`: import host files once into the in-memory Pebble filesystem, then keep running in memory
+- `vfs-import`: import host files into a Pebble VFS at boot, then run from the VFS
+- `vfs-persistent`: keep Pebble's virtual filesystem as the persistent source of truth
 
-`hostfs` is the fast and simple mode.
-
-- User files live directly as normal host files under [`pebble_disk/`](/Users/xulixin/LX_OS/pebble_disk)
-- Python can see and edit those files directly
-- `run` and `nano` operate on the real host files without any conversion step
-- New Pebble-native filesystem features may need separate compatibility work if
-  you want them to behave exactly the same here
-
-Use this mode when you want speed, simple debugging, and direct visibility from
-Python or the host OS.
-
-### `vfs-import`
-
-`vfs-import` creates a Pebble-managed virtual filesystem from the current host
-files at boot.
-
-- At startup, Pebble reads the current host user files and imports them into a
-  virtual disk image
-- The session then runs against the Pebble virtual filesystem
-- The host files are the source for boot import, not a continuously synced mirror
-
-Use this mode when you want to experiment with Pebble-native filesystem rules
-without committing to a long-lived virtual disk state.
-
-### `vfs-persistent`
-
-`vfs-persistent` keeps using the Pebble virtual disk image across boots.
-
-- User files live in a backing store file inside [`pebble_disk/`](/Users/xulixin/LX_OS/pebble_disk)
-- The backing store persists across sessions
-- Host user files are not the source of truth after the VFS has been created
-
-Use this mode when you want Pebble itself to own filesystem behavior and state.
-
-### Why two backends
-
-This split is intentional:
-
-- `hostfs` is the stable and fast mode
-- `vfs-*` modes are the Pebble-native evolution path
-
-That means Pebble OS can keep a practical host-backed mode while still growing a
-filesystem that Pebble can redefine for itself.
-
-### Synchronization model
-
-The modes are not continuously synchronized.
-
-- `hostfs` reads and writes host files directly
-- `vfs-import` imports host files at boot, then runs inside the VFS for that session
-- `vfs-persistent` loads the saved VFS image and does not re-import host files unless you switch modes
-
-This avoids hidden merge rules, metadata conflicts, and accidental loss of
-Pebble-native filesystem features that do not map cleanly onto host files.
-
-### Shadow files
-
-In VFS modes, Pebble user files are not real host files. Today `run` and `nano`
-still depend on host-visible paths, so Pebble OS uses temporary shadow files as
-a bridge:
-
-- copy a Pebble VFS file into a temporary host file
-- run the existing program/editor flow on that host file
-- copy the result back into the VFS if needed
-- delete the temporary file
-
-These shadow files are implementation details. They are not the source of truth
-for user files.
-
-To support that runtime-managed shell, Pebble also exposes a small host bridge
-to `system/shell.peb`:
-
-- `raw_list_files()`
-- `raw_file_exists(name)`
-- `raw_create_file(name, text)`
-- `raw_modify_file(name, text)`
-- `raw_delete_file(name)`
-- `raw_read_file(name)`
-- `raw_write_file(name, text)`
-- `raw_file_time(name)`
-- `capture_text()`
-- `run_program(name, argv)`
-- `term_write(text)`
-- `term_flush()`
-- `term_clear()`
-- `term_move(row, col)`
-- `term_hide_cursor()`
-- `term_show_cursor()`
-- `term_read_key()`
-- `term_read_key_timeout(ms)`
-- `term_rows()`
-- `term_cols()`
-- `runtime_error(message)`
-
-Pebble then defines the public filesystem behavior inside
-[`system/runtime.peb`](/Users/xulixin/LX_OS/pebble_system/runtime.peb) by routing
-those raw host functions through the selected backend.
+For the full design, synchronization model, shadow-file bridge, and raw host
+bridge details, see [FILESYSTEM.md](/Users/xulixin/LX_OS/FILESYSTEM.md).
 
 Useful commands:
 
 - `ls`
+- `cd demos`
+- `pwd`
+- `mkdir docs`
+- `rmdir docs`
 - `time`
 - `run demo.peb`
 - `exec demo.peb`
+- `run system/clock_tick.peb`
+- `run system/count_tick.peb`
 - `run system/atari_pong.peb`
 - `touch demo.peb`
 - `edit demo.peb`
@@ -246,53 +108,9 @@ Pebble now has two execution modes for programs:
 - `run FILE [ARGS...]` executes Pebble source through the runtime interpreter
 - `exec FILE [ARGS...]` compiles Pebble source to bytecode and runs it through the bytecode VM
 
-Pebble now supports floating-point literals and mixed integer/float arithmetic
-for `+`, `-`, `*`, `/`, comparisons, `str()`, `int()`, and `float()`.
-
-The shared Pebble runtime also provides Pebble-implemented math helpers:
-
-- `abs(x)`
-- `pow(x, n)` for non-negative integer exponents
-- `sqrt(x)` as integer floor square root
-- `sin(deg)`, `cos(deg)`, `tan(deg)` using degree input
-
-Trigonometric functions return fixed-point integers scaled by `10000`, so:
-
-- `sin(30)` returns `5000`
-- `cos(60)` returns `5000`
-- `tan(45)` returns `10000`
-
-Pebble now also supports a small built-in module system:
-
-```text
-import math
-print math.sin(30)
-print math.abs(-7)
-```
-
-Current built-in modules:
-
-- `math`: `abs`, `pow`, `sqrt`, `sin`, `cos`, `tan`
-- `text`: `len`, `repeat`, `lines`, `join`, `first_line`
-- `os`: `list`, `exists`, `read`, `write`, `delete`, `time`
-- `random`: `seed`, `next`, `range`
-
-Pebble can also import user modules from Pebble files in the active filesystem:
-
-```text
-import mymodule
-print mymodule.VALUE
-print mymodule.twice(7)
-```
-
-This loads `mymodule.peb` and exposes its globals and functions through the
-module object.
-
-Pebble programs receive:
-
-- `ARGC` as the argument count
-- `ARGV` as a list of argument strings
-- `argv(i)` as a convenience builtin for fetching one argument
+Pebble language details, math/module support, user imports, and builtins are
+documented in [LANG.md](/Users/xulixin/LX_OS/LANG.md). Pebble memory layers are
+documented in [MEMORY.md](/Users/xulixin/LX_OS/MEMORY.md).
 
 When creating or editing a file, finish input with a single `.` on its own line.
 
@@ -382,12 +200,17 @@ Pebble itself:
 - `system/runtime.peb` is the shared runtime and standard-library layer
 - `system/shell.peb` owns shell command behavior, help, intro, and prompt
 - `system/nano.peb` is the runtime-managed editor
+- `system/clock_tick.peb` and `system/count_tick.peb` add Pebble-written ticking demo apps that update once per second
 - `system/atari_pong.peb` adds a Pebble-written Atari-style terminal game to the system tools
+- Pebble OS now uses a rooted path model with directories, `cd`, `pwd`, `mkdir`, and `rmdir`, while still mounting `system/...` as the runtime subtree
 - Pebble programs can now run in two modes: direct interpreter execution with `run`, and bytecode execution with `exec`
 - Pebble language now supports floating-point numbers and numeric division in both interpreter and bytecode modes
 - Pebble now supports both built-in modules and file-based user modules through a common import mechanism
 - Pebble runtime math now includes pure-Pebble `abs`, `pow`, `sqrt`, `sin`, `cos`, and `tan` helpers without a Python math bridge
+- Pebble runtime now includes a Pebble-native virtual RAM layer through `import memory`, giving programs explicit alloc/read/write behavior without changing the Python host memory model
+- Pebble runtime now adds block memory operations, a Pebble-native `heap` allocator, and a more explicit bytecode VM frame/value stack model to move execution semantics further away from raw Python object management
 - the shell can read host local time through a small bridge and expose it as a runtime-managed `time` command
+- shell and filesystem timestamps now include seconds, and `run`/`exec` stream program output as it is produced instead of buffering until process exit
 - Pebble terminal programs can poll input with a timeout, which gives Pebble a basic real-time game loop capability
 - the filesystem exposes per-file timestamps so `ls` can show a time for each file
 - Pebble OS supports both direct host files `hostfs` and Pebble-managed virtual filesystems `vfs` through a unified Pebble filesystem layer
@@ -408,7 +231,7 @@ moving system behavior into Pebble.
 
 ### Completed
 
-- Flat Pebble OS filesystem with explicit mounts
+- Rooted Pebble OS filesystem with directories and explicit `system/...` mount behavior
 - Pebble language with Python-style indentation and basic control flow
 - File I/O, strings, lists, and dicts
 - Runtime-managed shell command layer in `system/shell.peb`
@@ -420,7 +243,7 @@ moving system behavior into Pebble.
 ### Near-term
 
 - Move more user tools from `pebble_disk/` into `system/*.peb`
-- Add more Linux-style shell commands such as `cp`, `echo`, and `pwd`
+- Add more Linux-style shell commands such as `echo` and `find`
 - Clean up the shell surface so only the preferred command set remains
 - Expand `system/runtime.peb` into a more stable standard library
 

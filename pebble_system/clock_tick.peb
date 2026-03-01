@@ -1,0 +1,9 @@
+print "CLOCK TICK  Press Q to quit"
+
+running = 1
+
+while running:
+    print current_time()
+    key = read_key_timeout(1000)
+    if key == "q" or key == "Q" or key == "ESC":
+        running = 0
