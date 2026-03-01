@@ -21,14 +21,16 @@ What it provides now:
 
 - thread state constants
 - a Pebble kernel thread module
+- a Pebble kernel mutex module
 - runtime wrappers for thread spawn/join/self/yield/list
+- runtime wrappers for mutex create/lock/try-lock/unlock/list
 - host-backed thread records built on VM tasks
 
 What it does not claim yet:
 
 - full `pthread_create(func, args)` support
 - preemptive scheduling
-- mutexes or condition variables
+- condition variables
 - per-thread signal masks
 - true multi-threaded shared-heap safety guarantees
 
@@ -49,6 +51,7 @@ What it does not claim yet:
 
 - `tid`
 - `pid`
+- `tgid`
 - `state`
 - `name`
 - `argv`
@@ -63,6 +66,7 @@ What it does not claim yet:
 - `running`
 - `blocked-input`
 - `blocked-tty`
+- `blocked-mutex`
 - `halted`
 - `error`
 
@@ -89,6 +93,22 @@ This creates a new VM-backed thread record in the current process.
 - `thread_yield() -> 0`
 - `thread_list() -> [record, ...]`
 
+### Bootstrap mutex API
+
+- `mutex_create() -> mid`
+- `mutex_lock(mid) -> 0`
+- `mutex_try_lock(mid) -> 1|0`
+- `mutex_unlock(mid) -> 0`
+- `mutex_list() -> [record, ...]`
+
+The current bootstrap mutex model is intentionally small:
+
+- mutex ownership is tracked by `tid`
+- blocked lockers enter `blocked-mutex`
+- unlocking wakes the next waiting thread
+- `mutex_try_lock()` is non-blocking
+- re-lock by the current owner succeeds as a bootstrap compatibility shortcut
+
 `thread_join()` currently cooperatively steps the target thread until it reaches
 a terminal state and then returns a record with at least:
 
@@ -104,7 +124,7 @@ The intended later evolution is:
 
 1. `thread_spawn_source(...)`
 2. `thread_spawn(func, args)`
-3. mutex/condvar/futex-like waiting
+3. richer mutex/condvar/futex-like waiting
 4. thread-aware `top`/`ps`
 5. signal mask and richer scheduler policy
 

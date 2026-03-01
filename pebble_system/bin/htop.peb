@@ -1,0 +1,158 @@
+import system.kernel.proc
+import system.kernel.thread
+import system.kernel.term
+import system.lib.path
+
+def slice_text(text, start_index, end_index):
+    out = ""
+    i = start_index
+    while i < end_index:
+        if i >= 0 and i < len(text):
+            out = out + text[i]
+        i = i + 1
+    return out
+
+def repeat_text(text, count):
+    out = ""
+    i = 0
+    while i < count:
+        out = out + text
+        i = i + 1
+    return out
+
+def pad_right(text, width):
+    if width <= 0:
+        return ""
+    if len(text) >= width:
+        return slice_text(text, 0, width)
+    return text + repeat_text(" ", width - len(text))
+
+def count_state(records, state):
+    count = 0
+    i = 0
+    while i < len(records):
+        if records[i]["state"] == state:
+            count = count + 1
+        i = i + 1
+    return count
+
+def print_process_row(index, record, selected, width):
+    marker = " "
+    if selected == 1:
+        marker = ">"
+    exit_text = "-"
+    if record["exit_status"] != -1:
+        exit_text = str(record["exit_status"])
+    line = marker + pad_right(str(index + 1), 4)
+    line = line + " " + pad_right(str(record["pid"]), 5)
+    line = line + " " + pad_right(record["state"], 12)
+    line = line + " " + pad_right(record["kind"], 9)
+    line = line + " " + pad_right(exit_text, 4)
+    line = line + " " + record["program"]
+    print slice_text(line, 0, width)
+
+def print_thread_row(index, record, selected, width):
+    marker = " "
+    if selected == 1:
+        marker = ">"
+    line = marker + pad_right(str(index + 1), 4)
+    line = line + " " + pad_right(str(record["tid"]), 5)
+    line = line + " " + pad_right(str(record["tgid"]), 5)
+    line = line + " " + pad_right(record["state"], 12)
+    line = line + " " + record["name"]
+    if record["blocked_on"] != "":
+        line = line + " blocked=" + record["blocked_on"]
+    print slice_text(line, 0, width)
+
+def render_header(snapshot, tty, processes, threads, show_threads, width):
+    print slice_text("Pebble htop  " + current_time() + "  tty=" + tty["mode"], 0, width)
+    print slice_text("PATH=" + system.lib.path.env_value(snapshot["self"]["env"], "PATH", ""), 0, width)
+    print slice_text("tasks=" + str(len(processes)) + " running=" + str(count_state(processes, "running") + count_state(processes, "foreground")) + " threads=" + str(len(threads)) + " jobs=" + str(len(snapshot["jobs"])), 0, width)
+    if show_threads == 1:
+        print slice_text("#    TID   TGID  STATE        NAME", 0, width)
+    else:
+        print slice_text("#    PID   STATE        KIND      EXIT PROGRAM", 0, width)
+
+def render_once():
+    snapshot = system.kernel.proc.process_table_snapshot()
+    tty = system.kernel.term.tty_snapshot()
+    width = tty["cols"]
+    processes = snapshot["processes"]
+    threads = system.kernel.thread.thread_list()
+    render_header(snapshot, tty, processes, threads, 0, width)
+    i = 0
+    while i < len(processes):
+        print_process_row(i, processes[i], 0, width)
+        i = i + 1
+
+once = 0
+i = 0
+while i < ARGC:
+    if argv(i) == "--once":
+        once = 1
+    i = i + 1
+
+if once == 1:
+    render_once()
+else:
+    running = 1
+    show_threads = 0
+    offset = 0
+    selected = 0
+    while running == 1:
+        snapshot = system.kernel.proc.process_table_snapshot()
+        tty = system.kernel.term.tty_snapshot()
+        width = tty["cols"]
+        height = tty["rows"]
+        processes = snapshot["processes"]
+        threads = system.kernel.thread.thread_list()
+        records = processes
+        if show_threads == 1:
+            records = threads
+        total = len(records)
+        if total == 0:
+            selected = 0
+            offset = 0
+        else:
+            if selected < 0:
+                selected = 0
+            if selected >= total:
+                selected = total - 1
+        body_rows = height - 6
+        if body_rows < 1:
+            body_rows = 1
+        if selected < offset:
+            offset = selected
+        if selected >= offset + body_rows:
+            offset = selected - body_rows + 1
+        clear_screen()
+        render_header(snapshot, tty, processes, threads, show_threads, width)
+        i = 0
+        while i < body_rows and offset + i < total:
+            row = offset + i
+            marker = 0
+            if row == selected:
+                marker = 1
+            if show_threads == 1:
+                print_thread_row(row, records[row], marker, width)
+            else:
+                print_process_row(row, records[row], marker, width)
+            i = i + 1
+        print ""
+        print slice_text("q quit  H threads  j/k move  rows " + str(offset + 1) + "-" + str(offset + body_rows) + "/" + str(total), 0, width)
+        key = read_key_timeout(1000)
+        if key == "q" or key == "Q":
+            running = 0
+        elif key == "H":
+            if show_threads == 1:
+                show_threads = 0
+            else:
+                show_threads = 1
+            selected = 0
+            offset = 0
+        elif key == "j" or key == "DOWN":
+            if selected + 1 < total:
+                selected = selected + 1
+        elif key == "k" or key == "UP":
+            if selected > 0:
+                selected = selected - 1

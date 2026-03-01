@@ -1,40 +1,228 @@
 import system.kernel.proc
+import system.kernel.thread
+import system.kernel.term
 import system.lib.path
 
-def print_process(record):
+def slice_text(text, start_index, end_index):
+    out = ""
+    i = start_index
+    while i < end_index:
+        if i >= 0 and i < len(text):
+            out = out + text[i]
+        i = i + 1
+    return out
+
+def repeat_text(text, count):
+    out = ""
+    i = 0
+    while i < count:
+        out = out + text
+        i = i + 1
+    return out
+
+def pad_right(text, width):
+    if width <= 0:
+        return ""
+    if len(text) >= width:
+        return slice_text(text, 0, width)
+    return text + repeat_text(" ", width - len(text))
+
+def count_state(records, state):
+    count = 0
+    i = 0
+    while i < len(records):
+        if records[i]["state"] == state:
+            count = count + 1
+        i = i + 1
+    return count
+
+def count_running_threads(records):
+    count = 0
+    i = 0
+    while i < len(records):
+        if records[i]["state"] == "running" or records[i]["state"] == "foreground":
+            count = count + 1
+        i = i + 1
+    return count
+
+def process_sort_key(record, sort_mode):
+    if sort_mode == "pid":
+        return record["pid"]
+    if sort_mode == "pgid":
+        return record["pgid"]
+    if sort_mode == "kind":
+        return record["kind"]
+    if sort_mode == "state":
+        return record["state"]
+    return record["program"]
+
+def thread_sort_key(record, sort_mode):
+    if sort_mode == "tid":
+        return record["tid"]
+    if sort_mode == "tgid":
+        return record["tgid"]
+    if sort_mode == "state":
+        return record["state"]
+    return record["name"]
+
+def sort_processes(records, sort_mode):
+    out = []
+    i = 0
+    while i < len(records):
+        item = records[i]
+        inserted = 0
+        temp = []
+        j = 0
+        while j < len(out):
+            if inserted == 0 and process_sort_key(item, sort_mode) < process_sort_key(out[j], sort_mode):
+                append(temp, item)
+                inserted = 1
+            append(temp, out[j])
+            j = j + 1
+        if inserted == 0:
+            append(temp, item)
+        out = temp
+        i = i + 1
+    return out
+
+def sort_threads(records, sort_mode):
+    out = []
+    i = 0
+    while i < len(records):
+        item = records[i]
+        inserted = 0
+        temp = []
+        j = 0
+        while j < len(out):
+            if inserted == 0 and thread_sort_key(item, sort_mode) < thread_sort_key(out[j], sort_mode):
+                append(temp, item)
+                inserted = 1
+            append(temp, out[j])
+            j = j + 1
+        if inserted == 0:
+            append(temp, item)
+        out = temp
+        i = i + 1
+    return out
+
+def print_process(record, width):
     exit_text = "-"
     if record["exit_status"] != -1:
         exit_text = str(record["exit_status"])
-    print str(record["pid"]) + " " + record["kind"] + " " + record["state"] + " pgid=" + str(record["pgid"]) + " exit=" + exit_text + " " + record["program"]
+    line = pad_right(str(record["pid"]), 5)
+    line = line + " " + pad_right(record["kind"], 10)
+    line = line + " " + pad_right(record["state"], 12)
+    line = line + " " + pad_right(str(record["pgid"]), 5)
+    line = line + " " + pad_right(exit_text, 4)
+    line = line + " " + record["program"]
+    print slice_text(line, 0, width)
 
-def render_snapshot():
-    snapshot = system.kernel.proc.process_table_snapshot()
-    print "Pebble top  " + current_time()
-    print "PATH=" + system.lib.path.env_value(snapshot["self"]["env"], "PATH", "")
-    print "FG_PGID=" + str(snapshot["foreground_pgid"])
-    print "PID KIND STATE PGID EXIT PROGRAM"
-    records = snapshot["processes"]
-    i = 0
-    while i < len(records):
-        print_process(records[i])
+def print_thread(record, width):
+    extra = ""
+    if record["blocked_on"] != "":
+        extra = " blocked=" + record["blocked_on"]
+    line = pad_right(str(record["tid"]), 5)
+    line = line + " " + pad_right(str(record["tgid"]), 5)
+    line = line + " " + pad_right(record["state"], 12)
+    line = line + " " + record["name"] + extra
+    print slice_text(line, 0, width)
+
+def print_process_rows(records, start, limit, width):
+    i = start
+    shown = 0
+    while i < len(records) and shown < limit:
+        print_process(records[i], width)
         i = i + 1
+        shown = shown + 1
+
+def print_thread_rows(records, start, limit, width):
+    i = start
+    shown = 0
+    while i < len(records) and shown < limit:
+        print_thread(records[i], width)
+        i = i + 1
+        shown = shown + 1
+
+def render_snapshot(show_threads, offset, sort_mode):
+    snapshot = system.kernel.proc.process_table_snapshot()
+    processes = sort_processes(snapshot["processes"], sort_mode)
+    threads = sort_threads(system.kernel.thread.thread_list(), sort_mode)
+    tty = system.kernel.term.tty_snapshot()
+    width = tty["cols"]
+    body_rows = tty["rows"] - 7
+    if body_rows < 1:
+        body_rows = 1
+    print slice_text("Pebble top  " + current_time(), 0, width)
+    print slice_text("PATH=" + system.lib.path.env_value(snapshot["self"]["env"], "PATH", ""), 0, width)
+    print slice_text("FG_PGID=" + str(snapshot["foreground_pgid"]) + "  tty=" + tty["mode"] + "  syscalls=" + str(len(snapshot["syscalls"])), 0, width)
+    print slice_text("tasks=" + str(len(processes)) + " running=" + str(count_state(processes, "running")) + " foreground=" + str(count_state(processes, "foreground")) + " jobs=" + str(len(snapshot["jobs"])) + " threads=" + str(len(threads)), 0, width)
+    if show_threads:
+        print slice_text("TID TGID STATE NAME", 0, width)
+        print_thread_rows(threads, offset, body_rows, width)
+    else:
+        print slice_text("PID   KIND       STATE        PGID  EXIT PROGRAM", 0, width)
+        print_process_rows(processes, offset, body_rows, width)
+    return {"processes": processes, "threads": threads, "body_rows": body_rows}
+
+def next_sort_mode(sort_mode, show_threads):
+    if show_threads:
+        if sort_mode == "tid":
+            return "tgid"
+        if sort_mode == "tgid":
+            return "state"
+        if sort_mode == "state":
+            return "name"
+        return "tid"
+    if sort_mode == "pid":
+        return "pgid"
+    if sort_mode == "pgid":
+        return "state"
+    if sort_mode == "state":
+        return "program"
+    return "pid"
 
 once = 0
+show_threads = 0
+sort_mode = "pid"
 i = 0
 while i < ARGC:
     if argv(i) == "--once":
         once = 1
+    elif argv(i) == "--threads" or argv(i) == "-H":
+        show_threads = 1
+        sort_mode = "tid"
     i = i + 1
 
 if once:
-    render_snapshot()
+    render_snapshot(show_threads, 0, sort_mode)
 else:
     running = 1
+    offset = 0
     while running:
         clear_screen()
-        render_snapshot()
+        state = render_snapshot(show_threads, offset, sort_mode)
+        total = len(state["threads"])
+        if show_threads == 0:
+            total = len(state["processes"])
         print ""
-        print "press q to quit"
+        print "q quit  H threads  j/k scroll  s sort  rows " + str(offset + 1) + "-" + str(offset + state["body_rows"]) + "/" + str(total)
         key = read_key_timeout(1000)
         if key == "q" or key == "Q":
             running = 0
+        elif key == "H":
+            if show_threads:
+                show_threads = 0
+                sort_mode = "pid"
+            else:
+                show_threads = 1
+                sort_mode = "tid"
+            offset = 0
+        elif key == "s" or key == "S":
+            sort_mode = next_sort_mode(sort_mode, show_threads)
+            offset = 0
+        elif key == "j" or key == "DOWN":
+            if offset + state["body_rows"] < total:
+                offset = offset + 1
+        elif key == "k" or key == "UP":
+            if offset > 0:
+                offset = offset - 1

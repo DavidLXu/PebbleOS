@@ -35,6 +35,9 @@ Pebble currently supports:
 - `for name in range(...):`
 - `def name(arg1, arg2):`
 - `return expression`
+- `raise expression`
+- `try: ... except:`
+- `try: ... except err:`
 
 ## Expressions
 
@@ -144,11 +147,28 @@ while i < len(data):
 print math.abs(-7)
 write_file("hello.txt", name)
 print read_file("hello.txt")
+
+try:
+    print missing_name
+except:
+    print "recovered"
+
+try:
+    raise "boom"
+except:
+    print "raised and handled"
+
+try:
+    raise "disk full"
+except err:
+    print err
 ```
 
 ## Notes
 
 - The shell command `lang` prints an in-system summary of current syntax
+- `try/except` currently supports `except:` and `except err:` but still has no `finally`
+- `raise expression` currently raises a plain Pebble runtime error using the stringified value
 - Trigonometric functions use degree input
 - `sin`, `cos`, and `tan` currently return fixed-point integers scaled by `10000`
 - More detailed memory behavior for `memory` and `heap` is documented in [MEMORY.md](/Users/xulixin/LX_OS/MEMORY.md)

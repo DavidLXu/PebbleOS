@@ -1,6 +1,7 @@
 import system.kernel.proc
 import system.kernel.syscall
 import system.kernel.thread
+import system.kernel.mutex
 import system.kernel.term
 import system.lib.base
 
@@ -1204,6 +1205,21 @@ def thread_yield():
 
 def thread_list():
     return system.kernel.thread.thread_list()
+
+def mutex_create():
+    return system.kernel.mutex.mutex_create()
+
+def mutex_lock(mutex_id):
+    return system.kernel.mutex.mutex_lock(mutex_id)
+
+def mutex_try_lock(mutex_id):
+    return system.kernel.mutex.mutex_try_lock(mutex_id)
+
+def mutex_unlock(mutex_id):
+    return system.kernel.mutex.mutex_unlock(mutex_id)
+
+def mutex_list():
+    return system.kernel.mutex.mutex_list()
 
 def open_device(path, mode):
     return sys_fd_open(path, mode)

@@ -21,6 +21,7 @@ from pebble_bootloader.lang import (
     PebbleBytecodeInterpreter,
     PebbleError,
     PebbleInputBlocked,
+    PebbleMutexBlocked,
     PebbleInterpreter,
     PebbleTTYBlocked,
 )
@@ -73,6 +74,7 @@ class VMTask:
     tty_timeout_seconds: float | None = None
     pending_tty_bytes: list[str] = field(default_factory=list)
     pending_escape_started_at: float | None = None
+    blocked_mutex_id: int | None = None
 
 
 @dataclass
@@ -115,6 +117,9 @@ class PebbleShell(cmd.Cmd):
         self._next_job_id = 1
         self._vm_tasks: dict[int, VMTask] = {}
         self._vm_lock = threading.Lock()
+        self._vm_execution_context = threading.local()
+        self._mutexes: dict[int, dict[str, object]] = {}
+        self._next_mutex_id = 1
         self._vm_snapshots: dict[int, dict[str, object]] = {}
         self._next_vm_snapshot_id = 1
         self._pending_signal_events: list[dict[str, object]] = []
@@ -642,6 +647,11 @@ class PebbleShell(cmd.Cmd):
                 "thread_self_host": self._host_thread_self,
                 "thread_yield_host": self._host_thread_yield,
                 "list_thread_records": self._host_list_thread_records,
+                "mutex_create_host": self._host_mutex_create,
+                "mutex_lock_host": self._host_mutex_lock,
+                "mutex_try_lock_host": self._host_mutex_try_lock,
+                "mutex_unlock_host": self._host_mutex_unlock,
+                "list_mutex_records": self._host_list_mutex_records,
                 "cwd": self._host_cwd,
                 "chdir": self._host_chdir,
                 "filesystem_file_count": self._host_filesystem_file_count,
@@ -1367,11 +1377,11 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: vm task {args[0]} does not exist")
         if args[1] < 0:
             raise PebbleError(f"line {line_number}: vm_step_task() step count cannot be negative")
-        if task.status in {"halted", "error", "blocked-input", "blocked-tty"}:
+        if task.status in {"halted", "error", "blocked-input", "blocked-tty", "blocked-mutex"}:
             return 0
         try:
             task.status = "running"
-            count = task.interpreter.run_steps(args[1])
+            count = self._run_vm_task_steps(task, args[1])
             task.status = "halted" if task.interpreter.vm_state.halted else "ready"
             return count
         except PebbleInputBlocked as exc:
@@ -1381,6 +1391,10 @@ class PebbleShell(cmd.Cmd):
         except PebbleTTYBlocked as exc:
             task.status = "blocked-tty"
             task.tty_timeout_seconds = exc.timeout_seconds
+            return 0
+        except PebbleMutexBlocked as exc:
+            task.status = "blocked-mutex"
+            task.blocked_mutex_id = exc.mutex_id
             return 0
         except PebbleError as exc:
             task.status = "error"
@@ -1474,19 +1488,136 @@ class PebbleShell(cmd.Cmd):
     def _thread_record(self, task: VMTask) -> dict[str, object]:
         status = task.status
         exit_status = 0
+        blocked_on = ""
         if status == "error":
             exit_status = 1
+        elif status == "blocked-input":
+            blocked_on = "stdin"
+        elif status == "blocked-tty":
+            blocked_on = "tty"
+        elif status == "blocked-mutex":
+            blocked_on = "mutex" if task.blocked_mutex_id is None else f"mutex:{task.blocked_mutex_id}"
         return {
             "tid": task.task_id,
             "pid": task.ppid,
+            "tgid": task.ppid,
             "state": status,
             "name": task.program,
             "argv": list(task.argv),
             "cwd": task.cwd,
             "exit_status": exit_status,
+            "blocked_on": blocked_on,
             "attached": 1 if task.attached else 0,
             "outputs": list(task.interpreter.output),
         }
+
+    def _host_mutex_create(self, args: list[object], line_number: int) -> int:
+        if args:
+            raise PebbleError(f"line {line_number}: mutex_create_host() expected 0 arguments but got {len(args)}")
+        with self._vm_lock:
+            mutex_id = self._next_mutex_id
+            self._next_mutex_id = self._next_mutex_id + 1
+            self._mutexes[mutex_id] = {"id": mutex_id, "owner_tid": None, "waiters": []}
+        return mutex_id
+
+    def _current_thread_id(self) -> int:
+        task = getattr(self._vm_execution_context, "task", None)
+        return 0 if task is None else task.task_id
+
+    def _run_vm_task_steps(self, task: VMTask, step_budget: int) -> int:
+        self._vm_execution_context.task = task
+        try:
+            return task.interpreter.run_steps(step_budget)
+        finally:
+            self._vm_execution_context.task = None
+
+    def _require_mutex(self, mutex_id: int, line_number: int) -> dict[str, object]:
+        with self._vm_lock:
+            mutex = self._mutexes.get(mutex_id)
+        if mutex is None:
+            raise PebbleError(f"line {line_number}: mutex {mutex_id} does not exist")
+        return mutex
+
+    def _host_mutex_lock(self, args: list[object], line_number: int) -> int:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: mutex_lock_host() expects one integer mutex id")
+        mutex_id = args[0]
+        owner_tid = self._current_thread_id()
+        with self._vm_lock:
+            mutex = self._mutexes.get(mutex_id)
+            if mutex is None:
+                raise PebbleError(f"line {line_number}: mutex {mutex_id} does not exist")
+            current_owner = mutex["owner_tid"]
+            if current_owner is None or current_owner == owner_tid:
+                mutex["owner_tid"] = owner_tid
+                task = self._vm_tasks.get(owner_tid)
+                if task is not None:
+                    task.blocked_mutex_id = None
+                return 0
+            waiters = mutex["waiters"]
+            if owner_tid != 0 and owner_tid not in waiters:
+                waiters.append(owner_tid)
+            raise PebbleMutexBlocked(mutex_id)
+
+    def _host_mutex_try_lock(self, args: list[object], line_number: int) -> int:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: mutex_try_lock_host() expects one integer mutex id")
+        mutex_id = args[0]
+        owner_tid = self._current_thread_id()
+        with self._vm_lock:
+            mutex = self._mutexes.get(mutex_id)
+            if mutex is None:
+                raise PebbleError(f"line {line_number}: mutex {mutex_id} does not exist")
+            current_owner = mutex["owner_tid"]
+            if current_owner is None or current_owner == owner_tid:
+                mutex["owner_tid"] = owner_tid
+                task = self._vm_tasks.get(owner_tid)
+                if task is not None:
+                    task.blocked_mutex_id = None
+                return 1
+        return 0
+
+    def _host_mutex_unlock(self, args: list[object], line_number: int) -> int:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: mutex_unlock_host() expects one integer mutex id")
+        mutex_id = args[0]
+        owner_tid = self._current_thread_id()
+        with self._vm_lock:
+            mutex = self._mutexes.get(mutex_id)
+            if mutex is None:
+                raise PebbleError(f"line {line_number}: mutex {mutex_id} does not exist")
+            if mutex["owner_tid"] != owner_tid:
+                raise PebbleError(f"line {line_number}: mutex {mutex_id} is not owned by thread {owner_tid}")
+            next_owner = None
+            waiters = mutex["waiters"]
+            while waiters:
+                candidate = waiters.pop(0)
+                task = self._vm_tasks.get(candidate)
+                if task is None or task.status in {"halted", "error"}:
+                    continue
+                next_owner = candidate
+                task.blocked_mutex_id = None
+                if task.status == "blocked-mutex":
+                    task.status = "ready"
+                break
+            mutex["owner_tid"] = next_owner
+        return 0
+
+    def _host_list_mutex_records(self, args: list[object], line_number: int) -> list[dict[str, object]]:
+        if args:
+            raise PebbleError(f"line {line_number}: list_mutex_records() expected 0 arguments but got {len(args)}")
+        with self._vm_lock:
+            mutexes = []
+            for mutex_id in sorted(self._mutexes):
+                record = self._mutexes[mutex_id]
+                mutexes.append(
+                    {
+                        "id": mutex_id,
+                        "owner_tid": record["owner_tid"],
+                        "waiters": list(record["waiters"]),
+                    }
+                )
+        return mutexes
 
     def _host_thread_spawn_source(self, args: list[object], line_number: int) -> int:
         if len(args) != 3 or not isinstance(args[0], str) or not isinstance(args[1], str):
@@ -2134,11 +2265,11 @@ class PebbleShell(cmd.Cmd):
             with self._vm_lock:
                 tasks = [self._vm_tasks[key] for key in sorted(self._vm_tasks)]
             for task in tasks:
-                if task.status in {"halted", "error", "blocked-input", "blocked-tty"} or task.attached:
+                if task.status in {"halted", "error", "blocked-input", "blocked-tty", "blocked-mutex"} or task.attached:
                     continue
                 try:
                     task.status = "running"
-                    task.interpreter.run_steps(BACKGROUND_VM_STEP_BUDGET)
+                    self._run_vm_task_steps(task, BACKGROUND_VM_STEP_BUDGET)
                     task.status = "halted" if task.interpreter.vm_state.halted else "ready"
                     self._notify_sigchld_for_task(task)
                 except PebbleInputBlocked as exc:
@@ -2147,6 +2278,9 @@ class PebbleShell(cmd.Cmd):
                 except PebbleTTYBlocked as exc:
                     task.status = "blocked-tty"
                     task.tty_timeout_seconds = exc.timeout_seconds
+                except PebbleMutexBlocked as exc:
+                    task.status = "blocked-mutex"
+                    task.blocked_mutex_id = exc.mutex_id
                 except PebbleError as exc:
                     task.status = "error"
                     task.error = str(exc)
@@ -2212,7 +2346,7 @@ class PebbleShell(cmd.Cmd):
                     step_budget = FOREGROUND_VM_STEP_BUDGET
                     if task.pending_keys:
                         step_budget = FOREGROUND_VM_KEY_PRIORITY_STEP_BUDGET
-                    task.interpreter.run_steps(step_budget)
+                    self._run_vm_task_steps(task, step_budget)
                     task.status = "halted" if task.interpreter.vm_state.halted else "ready"
                     self._notify_sigchld_for_task(task)
                 except PebbleInputBlocked as exc:
@@ -2221,6 +2355,9 @@ class PebbleShell(cmd.Cmd):
                 except PebbleTTYBlocked as exc:
                     task.status = "blocked-tty"
                     task.tty_timeout_seconds = exc.timeout_seconds
+                except PebbleMutexBlocked as exc:
+                    task.status = "blocked-mutex"
+                    task.blocked_mutex_id = exc.mutex_id
                 except PebbleError as exc:
                     task.status = "error"
                     task.error = str(exc)

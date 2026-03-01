@@ -1,4 +1,5 @@
 import system.kernel.proc
+import system.kernel.thread
 import system.lib.path
 
 def shell_name():
@@ -55,7 +56,7 @@ def command_help(args):
         print "  runbg FILE [A]  compatibility launcher for background interpreter mode"
         print "  exec FILE [ARG] compatibility launcher for bytecode mode"
         print "  execbg FILE [A] compatibility launcher for background bytecode mode"
-        print "  ps              list system-visible processes and tasks"
+        print "  ps [-T]         list processes, or threads with -T"
         print "  jobs            list background jobs"
         print "  fg ID           wait for a background job and print its output"
         print "  bg ID           keep an existing job in the background"
@@ -63,7 +64,7 @@ def command_help(args):
         print "  preferred run   COMMAND [ARGS...] or COMMAND &"
         print "  external tools  ls, pwd, mkdir, rmdir, time, sync, touch"
         print "                  edit, cat, head, tail, rm, cp, mv"
-        print "                  echo, wc, lang, env, which, find, grep, kill, top, sh, bash"
+        print "                  echo, wc, lang, env, which, find, grep, kill, top, htop, sh, bash"
         print "                  from PATH: " + current_path()
         print "  cmd &           run external commands and Pebble programs in background"
         print "  >, >>, <        shell redirection for single commands"
@@ -100,8 +101,8 @@ def command_help(args):
         print "execbg FILE [ARGS...]"
         print "compatibility launcher for Pebble background bytecode mode"
     elif topic == "ps":
-        print "ps"
-        print "list system-visible Pebble tasks and host-managed background jobs"
+        print "ps [-T]"
+        print "list system-visible Pebble tasks and host-managed background jobs, or threads with -T"
     elif topic == "jobs":
         print "jobs"
         print "list background jobs started by Pebble OS"
@@ -214,8 +215,22 @@ def command_jobs(args):
     return 0
 
 def command_ps(args):
+    if len(args) == 1 and args[0] == "-T":
+        threads = system.kernel.thread.thread_list()
+        if len(threads) == 0:
+            print "(no threads)"
+            return 0
+        i = 0
+        while i < len(threads):
+            line = "tid=" + str(threads[i]["tid"]) + " tgid=" + str(threads[i]["tgid"]) + " " + threads[i]["state"]
+            if threads[i]["blocked_on"] != "":
+                line = line + " blocked=" + threads[i]["blocked_on"]
+            line = line + " " + threads[i]["name"]
+            print line
+            i = i + 1
+        return 0
     if len(args) != 0:
-        print "this command does not take arguments"
+        print "ps accepts no arguments or -T"
         return 0
     lines = system.kernel.proc.process_list()
     if len(lines) == 0:

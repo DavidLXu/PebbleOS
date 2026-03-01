@@ -1,0 +1,14 @@
+def mutex_create():
+    return mutex_create_host()
+
+def mutex_lock(mutex_id):
+    return mutex_lock_host(mutex_id)
+
+def mutex_try_lock(mutex_id):
+    return mutex_try_lock_host(mutex_id)
+
+def mutex_unlock(mutex_id):
+    return mutex_unlock_host(mutex_id)
+
+def mutex_list():
+    return list_mutex_records()

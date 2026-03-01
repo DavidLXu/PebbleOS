@@ -40,6 +40,7 @@ else:
     prefix = ""
     name_pattern = ""
     arg_index = 0
+    implicit_name = 0
     if ARGC >= 1 and argv(0) != "-name" and argv(0) != "-type":
         prefix = argv(0)
         arg_index = 1
@@ -52,6 +53,17 @@ else:
                 out = out + prefix[i]
                 i = i + 1
             prefix = out
+        else:
+            has_slash = 0
+            i = 0
+            while i < len(prefix):
+                if prefix[i] == "/":
+                    has_slash = 1
+                i = i + 1
+            if has_slash == 0:
+                implicit_name = 1
+                name_pattern = prefix
+                prefix = ""
     while arg_index < ARGC:
         if argv(arg_index) == "-name":
             if arg_index + 1 >= ARGC:
@@ -60,6 +72,7 @@ else:
                 arg_index = ARGC
             else:
                 name_pattern = argv(arg_index + 1)
+                implicit_name = 0
                 arg_index = arg_index + 2
         elif argv(arg_index) == "-type":
             if arg_index + 1 >= ARGC:
@@ -73,6 +86,9 @@ else:
             print "find only supports -name and -type"
             prefix = "__invalid__"
             arg_index = ARGC
+    if implicit_name and ARGC > 1:
+        print "find only supports a bare name pattern when it is the only argument"
+        prefix = "__invalid__"
     names = list_files()
     i = 0
     while i < len(names):

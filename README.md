@@ -17,6 +17,7 @@ Detailed architecture notes:
 - launcher semantics: [docs/LAUNCHER.md](/Users/xulixin/LX_OS/docs/LAUNCHER.md)
 - shell/login semantics: [docs/SHELL_LOGIN.md](/Users/xulixin/LX_OS/docs/SHELL_LOGIN.md)
 - tty/input semantics: [docs/TTY_INPUT.md](/Users/xulixin/LX_OS/docs/TTY_INPUT.md)
+- Pebble vs Python 3.x language gaps: [docs/PEBBLE_LANGUAGE_GAPS.md](/Users/xulixin/LX_OS/docs/PEBBLE_LANGUAGE_GAPS.md)
 
 ## Pebble language
 
@@ -196,8 +197,16 @@ That preparation phase added:
 - Pebble runtime output helpers now route through `/dev/stdout`, and a
   Pebble-native `tty` command can inspect the current `/dev/tty` state without
   adding a Python-only shell command
-- `ls` now shows only the current directory's direct children instead of dumping the full recursive file set, and a Pebble-native `tree` command provides recursive structure output when you do want the full subtree
+- Pebble userland now includes `top` and `htop` process viewers, with `top`
+  keeping a simple live task table and `htop` adding a denser interactive
+  dashboard over the same Pebble-visible process and thread ABI
+- `ls` now shows only the current directory's direct children instead of dumping the full recursive file set, and the Pebble-native `tree` command now uses a host-accelerated renderer in `hostfs` mode with the Pebble implementation kept as a fallback for other filesystem backends
+- Pebble userland now includes a `pebble` launcher in `system/bin`, so `pebble demo.peb` forces interpreter mode while direct program launch can continue to use the VM-oriented path separately
 - thread design is now documented in `docs/THREADING.md`, and Pebble exposes a first bootstrap thread ABI built on the VM scheduler with `thread_spawn_source`, `thread_join`, `thread_status`, `thread_self`, and `thread_list`
+- the bootstrap threading layer now includes Pebble-visible mutex syscalls and runtime wrappers, with blocked lockers surfacing as `blocked-mutex` and waking back into the VM scheduler when ownership is released
+- Pebble language priorities are now tracked against Python 3.x in `docs/PEBBLE_LANGUAGE_GAPS.md`, and the first OS-driven upgrade is in place: minimal `try: ... except:` error recovery in both interpreter and bytecode execution
+- Pebble error handling has advanced another step toward Python-style system code: `raise expression` now works in both interpreter and bytecode modes, still with a deliberately minimal runtime-error model
+- Pebble error recovery now also supports `except err:` bindings, with the bound value exposed as a stringified runtime error so system code can log or branch on failures without a full exception-class hierarchy yet
 
 This is the current transition point: PebbleOS is no longer just a bootstrap
 demo, but it is not yet a full modern system either. It now has enough

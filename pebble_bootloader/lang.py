@@ -23,6 +23,12 @@ class PebbleTTYBlocked(Exception):
         self.timeout_seconds = timeout_seconds
 
 
+class PebbleMutexBlocked(Exception):
+    def __init__(self, mutex_id: int) -> None:
+        super().__init__("mutex")
+        self.mutex_id = mutex_id
+
+
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MODULE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 DEF_RE = re.compile(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)\((.*)\):$")
@@ -156,7 +162,12 @@ class ModuleObject:
     functions: dict[str, object]
 
 
-Value = int | float | bool | None | str | ModuleObject | list["Value"] | dict["Value", "Value"]
+@dataclass
+class FunctionValue:
+    name: str
+
+
+Value = int | float | bool | None | str | ModuleObject | FunctionValue | list["Value"] | dict["Value", "Value"]
 HostFunction = Callable[[list[Value], int], Value]
 
 
@@ -259,6 +270,20 @@ class ImportStmt:
     line_number: int
 
 
+@dataclass
+class TryStmt:
+    body: list["Stmt"]
+    except_body: list["Stmt"]
+    except_name: str | None
+    line_number: int
+
+
+@dataclass
+class RaiseStmt:
+    expr: Expr
+    line_number: int
+
+
 Stmt = (
     AssignStmt
     | PrintStmt
@@ -272,6 +297,8 @@ Stmt = (
     | FunctionDefStmt
     | ReturnStmt
     | ImportStmt
+    | TryStmt
+    | RaiseStmt
 )
 
 
@@ -466,12 +493,36 @@ class Parser:
             self.index += 1
             return ReturnStmt(expr=self._parse_expression(text[7:], line.number), line_number=line.number)
 
+        if text.startswith("raise "):
+            self.index += 1
+            return RaiseStmt(expr=self._parse_expression(text[6:], line.number), line_number=line.number)
+
         if text.startswith("import "):
             module = text[7:].strip()
             if not MODULE_RE.match(module):
                 raise PebbleError(f"line {line.number}: invalid import target")
             self.index += 1
             return ImportStmt(module=module, line_number=line.number)
+
+        if text == "try:":
+            self.index += 1
+            body = self._parse_indented_block(line)
+            if self.index >= len(self.lines):
+                raise PebbleError(f"line {line.number}: try requires an except block")
+            except_line = self.lines[self.index]
+            except_name = self._parse_except_header(except_line, line)
+            if except_line.indent != line.indent or except_name is None:
+                raise PebbleError(f"line {line.number}: try requires a matching except block")
+            self.index += 1
+            return TryStmt(
+                body=body,
+                except_body=self._parse_indented_block(except_line),
+                except_name=except_name,
+                line_number=line.number,
+            )
+
+        if text == "except:" or text.startswith("except "):
+            raise PebbleError(f"line {line.number}: except without matching try")
 
         if text == "pass":
             self.index += 1
@@ -500,8 +551,20 @@ class Parser:
             return ExprStmt(expr=expr, line_number=line.number)
 
         raise PebbleError(
-            f"line {line.number}: expected assignment, print, if, while, for, def, return, import, pass, break, continue, or a function call"
+            f"line {line.number}: expected assignment, print, if, while, for, def, return, raise, import, try, pass, break, continue, or a function call"
         )
+
+    def _parse_except_header(self, line: SourceLine, try_line: SourceLine) -> str | None:
+        if line.indent != try_line.indent:
+            return None
+        if line.text == "except:":
+            return ""
+        if line.text.startswith("except ") and line.text.endswith(":"):
+            name = line.text[7:-1].strip()
+            if not IDENT_RE.match(name):
+                raise PebbleError(f"line {line.number}: invalid except binding name")
+            return name
+        return None
 
     def _parse_target(self, text: str, line_number: int) -> Target:
         try:
@@ -784,8 +847,12 @@ class BytecodeCompiler:
             )
         if isinstance(stmt, ReturnStmt):
             return ("RETURN", self._compile_expr(stmt.expr), stmt.line_number)
+        if isinstance(stmt, RaiseStmt):
+            return ("RAISE", self._compile_expr(stmt.expr), stmt.line_number)
         if isinstance(stmt, ImportStmt):
             return ("IMPORT", stmt.module, stmt.line_number)
+        if isinstance(stmt, TryStmt):
+            return ("TRY", self.compile(stmt.body), self.compile(stmt.except_body), stmt.except_name, stmt.line_number)
         raise PebbleError(f"line {stmt.line_number}: unknown statement type")
 
     def _compile_target(self, target: Target) -> tuple:
@@ -963,12 +1030,24 @@ class PebbleInterpreter:
                 raise PebbleError(f"line {statement.line_number}: return is only allowed inside functions")
             raise ReturnSignal(self._eval_expr(statement.expr, local_env))
 
+        if isinstance(statement, RaiseStmt):
+            raise PebbleError(f"line {statement.line_number}: {self._stringify(self._eval_expr(statement.expr, local_env))}")
+
         if isinstance(statement, ImportStmt):
             self._bind_imported_module(
                 statement.module,
                 self._import_module(statement.module, statement.line_number),
                 local_env,
             )
+            return
+
+        if isinstance(statement, TryStmt):
+            try:
+                self._execute_block(statement.body, local_env)
+            except PebbleError as exc:
+                if statement.except_name is not None and len(statement.except_name) != 0:
+                    self._write_variable(statement.except_name, str(exc), local_env)
+                self._execute_block(statement.except_body, local_env)
             return
 
         raise PebbleError(f"line {statement.line_number}: unknown statement type")
@@ -1116,6 +1195,12 @@ class PebbleInterpreter:
         line_number: int,
         local_env: dict[str, Value] | None,
     ) -> Value:
+        try:
+            target = self._read_variable(name, line_number, local_env)
+        except PebbleError:
+            target = None
+        if isinstance(target, FunctionValue):
+            return self._call_function_by_name(target.name, args, line_number, local_env)
         if name in self.functions:
             return self._call_function_by_name(name, args, line_number, local_env)
         return self._call_builtin_args(name, args, line_number)
@@ -1465,6 +1550,8 @@ class PebbleInterpreter:
             return local_env[name]
         if name in self.globals:
             return self.globals[name]
+        if name in self.functions:
+            return FunctionValue(name)
         raise PebbleError(f"line {line_number}: unknown variable '{name}'")
 
     def _bind_imported_module(
@@ -1503,6 +1590,8 @@ class PebbleInterpreter:
     def _clone_value(self, value: Value) -> Value:
         if isinstance(value, ModuleObject):
             return value
+        if isinstance(value, FunctionValue):
+            return value
         if isinstance(value, list):
             return self._clone_list(value)
         if isinstance(value, dict):
@@ -1521,6 +1610,8 @@ class PebbleInterpreter:
     def _stringify(self, value: Value) -> str:
         if value is None:
             return "None"
+        if isinstance(value, FunctionValue):
+            return "<function " + value.name + ">"
         if isinstance(value, bool):
             if value:
                 return "True"
@@ -1620,7 +1711,7 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
                 frame.pc = frame.pc + 1
                 try:
                     self._execute_step_instr(instr, frame.locals)
-                except (PebbleInputBlocked, PebbleTTYBlocked):
+                except (PebbleInputBlocked, PebbleTTYBlocked, PebbleMutexBlocked):
                     frame.pc = frame.pc - 1
                     raise
             self._consume_pending_signal()
@@ -1838,8 +1929,18 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
             if local_env is None:
                 raise PebbleError(f"line {instr[2]}: return is only allowed inside functions")
             raise ReturnSignal(self._eval_compiled_expr(instr[1], local_env))
+        if op == "RAISE":
+            raise PebbleError(f"line {instr[2]}: {self._stringify(self._eval_compiled_expr(instr[1], local_env))}")
         if op == "IMPORT":
             self._bind_imported_module(instr[1], self._import_module(instr[1], instr[2]), local_env)
+            return
+        if op == "TRY":
+            try:
+                self._execute_code(instr[1], local_env)
+            except PebbleError as exc:
+                if instr[3] is not None and instr[3] != "":
+                    self._write_variable(instr[3], str(exc), local_env)
+                self._execute_code(instr[2], local_env)
             return
         raise PebbleError(f"line {instr[-1]}: unknown bytecode instruction '{op}'")
 
@@ -1968,8 +2069,18 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
             if local_env is None:
                 raise PebbleError(f"line {instr[2]}: return is only allowed inside functions")
             raise ReturnSignal(self._eval_compiled_expr(instr[1], local_env))
+        if op == "RAISE":
+            raise PebbleError(f"line {instr[2]}: {self._stringify(self._eval_compiled_expr(instr[1], local_env))}")
         if op == "IMPORT":
             self._bind_imported_module(instr[1], self._import_module(instr[1], instr[2]), local_env)
+            return
+        if op == "TRY":
+            try:
+                self._execute_code(instr[1], local_env)
+            except PebbleError as exc:
+                if instr[3] is not None and instr[3] != "":
+                    self._write_variable(instr[3], str(exc), local_env)
+                self._execute_code(instr[2], local_env)
             return
         raise PebbleError(f"line {instr[-1]}: unknown bytecode instruction '{op}'")
 

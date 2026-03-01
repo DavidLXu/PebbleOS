@@ -169,9 +169,19 @@ Current thread syscalls:
 - `thread.yield`
 - `thread.list`
 
+Current sync syscalls:
+
+- `sync.mutex_create`
+- `sync.mutex_lock`
+- `sync.mutex_try_lock`
+- `sync.mutex_unlock`
+- `sync.mutex_list`
+
 This initial thread layer is intentionally built on the existing VM task
 scheduler. It is a process-shared execution bootstrap, not a final POSIX thread
-implementation.
+implementation. The first sync layer is similarly bootstrap-oriented: mutexes
+are thread-owned, blocked lockers surface as `blocked-mutex`, and wakeup is
+coordinated by the host scheduler.
 
 ## Device FD Bootstrap
 

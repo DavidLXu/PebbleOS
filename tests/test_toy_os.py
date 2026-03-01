@@ -113,6 +113,87 @@ class PebbleInterpreterTests(unittest.TestCase):
         with self.assertRaises(PebbleError):
             PebbleInterpreter().execute("print missing")
 
+    def test_interpreter_supports_minimal_try_except(self) -> None:
+        output = PebbleInterpreter().execute(
+            "\n".join(
+                [
+                    "try:",
+                    "    print missing_name",
+                    "except:",
+                    '    print "recovered"',
+                ]
+            )
+        )
+        self.assertEqual(output, ["recovered"])
+
+    def test_bytecode_supports_minimal_try_except(self) -> None:
+        interpreter = PebbleBytecodeInterpreter()
+        interpreter.prepare(
+            "\n".join(
+                [
+                    "try:",
+                    "    print missing_name",
+                    "except:",
+                    '    print "recovered"',
+                ]
+            )
+        )
+        self.assertEqual(interpreter.run_until_complete(), ["recovered"])
+
+    def test_interpreter_supports_raise_inside_try_except(self) -> None:
+        output = PebbleInterpreter().execute(
+            "\n".join(
+                [
+                    "try:",
+                    '    raise "boom"',
+                    "except:",
+                    '    print "handled"',
+                ]
+            )
+        )
+        self.assertEqual(output, ["handled"])
+
+    def test_bytecode_supports_raise_inside_try_except(self) -> None:
+        interpreter = PebbleBytecodeInterpreter()
+        interpreter.prepare(
+            "\n".join(
+                [
+                    "try:",
+                    '    raise "boom"',
+                    "except:",
+                    '    print "handled"',
+                ]
+            )
+        )
+        self.assertEqual(interpreter.run_until_complete(), ["handled"])
+
+    def test_interpreter_supports_except_binding(self) -> None:
+        output = PebbleInterpreter().execute(
+            "\n".join(
+                [
+                    "try:",
+                    '    raise "disk full"',
+                    "except err:",
+                    "    print err",
+                ]
+            )
+        )
+        self.assertEqual(output, ["line 2: disk full"])
+
+    def test_bytecode_supports_except_binding(self) -> None:
+        interpreter = PebbleBytecodeInterpreter()
+        interpreter.prepare(
+            "\n".join(
+                [
+                    "try:",
+                    '    raise "disk full"',
+                    "except err:",
+                    "    print err",
+                ]
+            )
+        )
+        self.assertEqual(interpreter.run_until_complete(), ["line 2: disk full"])
+
     def test_supports_functions_for_loops_if_blocks_and_returns(self) -> None:
         source = "\n".join(
             [
@@ -1125,6 +1206,116 @@ class PebbleInterpreterTests(unittest.TestCase):
         )
         self.assertEqual(output, ["ready", "ready", "1", "halted", "7"])
 
+    def test_runtime_exposes_mutex_bootstrap_api(self) -> None:
+        shell = build_shell()
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        output = PebbleInterpreter(
+            shell.fs.root,
+            path_resolver=shell._resolve_user_path_to_host,
+            host_functions=shell._make_runtime(consume_output=False).host_functions,
+        ).execute(
+            runtime_source
+            + "\n"
+            + "\n".join(
+                [
+                    "states = runtime_thread_states()",
+                    'print states["blocked-mutex"]',
+                    "mid = mutex_create()",
+                    "print mutex_try_lock(mid)",
+                    "print mutex_try_lock(mid)",
+                    "print len(mutex_list())",
+                    "print mutex_list()[0][\"owner_tid\"]",
+                    "mutex_unlock(mid)",
+                    "print mutex_list()[0][\"owner_tid\"] == None",
+                ]
+            ),
+            initial_globals={
+                "FS_MODE": "hostfs",
+                "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                "SYSTEM_SHELL_PATH": "system/shell.peb",
+                "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+            },
+        )
+        self.assertEqual(output, ["blocked-mutex", "1", "1", "1", "0", "1"])
+
+    def test_thread_mutex_block_and_wakeup(self) -> None:
+        shell = build_shell()
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        output = PebbleInterpreter(
+            shell.fs.root,
+            path_resolver=shell._resolve_user_path_to_host,
+            host_functions=shell._make_runtime(consume_output=False).host_functions,
+        ).execute(
+            runtime_source
+            + "\n"
+            + "\n".join(
+                [
+                    "mid = mutex_create()",
+                    "mutex_lock(mid)",
+                    'tid = thread_spawn_source("demo", "import system.kernel.mutex\\nsystem.kernel.mutex.mutex_lock(1)\\nprint 9\\nsystem.kernel.mutex.mutex_unlock(1)", [])',
+                    "print tid",
+                ]
+            ),
+            initial_globals={
+                "FS_MODE": "hostfs",
+                "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                "SYSTEM_SHELL_PATH": "system/shell.peb",
+                "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+            },
+        )
+        tid = int(output[0])
+        shell._host_vm_step_task([tid, 50], 1)
+        self.assertEqual(shell._host_thread_status([tid], 1), "blocked-mutex")
+        mutexes = shell._host_list_mutex_records([], 1)
+        self.assertEqual(mutexes[0]["waiters"], [tid])
+        shell._host_mutex_unlock([1], 1)
+        self.assertEqual(shell._host_thread_status([tid], 1), "ready")
+        record = shell._host_thread_join([tid], 1)
+        self.assertEqual(record["state"], "halted")
+        self.assertEqual(record["outputs"], ["9"])
+
+    def test_ps_dash_t_lists_threads(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        PebbleInterpreter(
+            shell.fs.root,
+            path_resolver=shell._resolve_user_path_to_host,
+            host_functions=shell._make_runtime(consume_output=False).host_functions,
+        ).execute(
+            runtime_source + '\nthread_spawn_source("demo", "print 1", [])\n',
+            initial_globals={
+                "FS_MODE": "hostfs",
+                "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                "SYSTEM_SHELL_PATH": "system/shell.peb",
+                "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+            },
+        )
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("ps -T")
+        self.assertTrue(any("tid=" in line and "tgid=" in line for line in outputs))
+
+    def test_top_once_can_render_threads(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        PebbleInterpreter(
+            shell.fs.root,
+            path_resolver=shell._resolve_user_path_to_host,
+            host_functions=shell._make_runtime(consume_output=False).host_functions,
+        ).execute(
+            runtime_source + '\nthread_spawn_source("demo", "print 1", [])\n',
+            initial_globals={
+                "FS_MODE": "hostfs",
+                "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                "SYSTEM_SHELL_PATH": "system/shell.peb",
+                "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+            },
+        )
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("top --once --threads")
+        self.assertTrue(any("TID TGID STATE NAME" in line for line in outputs))
+
     def test_runtime_can_write_to_dev_stdout_via_fd(self) -> None:
         shell = build_shell()
         runtime_source = shell.fs.read_file("system/runtime.peb")
@@ -1882,6 +2073,13 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         self.assertIn("/find_name_dir/alpha.txt", outputs)
         self.assertNotIn("/find_name_dir/beta.log", outputs)
 
+    def test_find_bare_name_matches_mounted_system_file(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("find shell.peb")
+        self.assertIn("/system/shell.peb", outputs)
+
     def test_grep_filters_pipeline_and_files(self) -> None:
         shell = build_shell()
         target = shell.fs.resolve_path("grep_file.txt")
@@ -2217,6 +2415,29 @@ class PebbleShellRuntimeTests(unittest.TestCase):
 
         self.assertIn("ESC", outputs)
 
+    def test_foreground_vm_task_read_key_timeout_resumes_without_input(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("vm_key_timeout.peb")
+        target.write_text('print read_key_timeout(10)\nprint "tick"\n', encoding="utf-8")
+        outputs: list[str] = []
+        bytes_seen = itertools.repeat("")
+
+        try:
+            with patch("sys.stdin.isatty", return_value=True):
+                with patch.object(shell, "_read_terminal_byte", side_effect=lambda timeout=None: next(bytes_seen)):
+                    with patch.object(shell, "_poll_foreground_job_action", return_value=None):
+                        with patch(
+                            "builtins.print",
+                            side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                        ):
+                            shell.onecmd("run vm_key_timeout.peb")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertIn("", outputs)
+        self.assertIn("tick", outputs)
+
     def test_shell_boot_creates_etc_placeholders_and_loads_profile(self) -> None:
         shell = build_shell()
         profile = shell.fs.resolve_path("etc/profile")
@@ -2276,6 +2497,14 @@ class PebbleShellRuntimeTests(unittest.TestCase):
             shell.onecmd("top --once")
         self.assertTrue(any("Pebble top" in line for line in outputs))
         self.assertTrue(any("PID KIND STATE PGID EXIT PROGRAM" in line for line in outputs))
+
+    def test_htop_once_prints_process_snapshot(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("htop --once")
+        self.assertTrue(any("Pebble htop" in line for line in outputs))
+        self.assertTrue(any("PID   STATE" in line and "PROGRAM" in line for line in outputs))
 
     def test_help_marks_legacy_launchers_as_compatibility_entrypoints(self) -> None:
         shell = build_shell()
@@ -2524,6 +2753,23 @@ class PebbleShellRuntimeTests(unittest.TestCase):
                 target.unlink()
 
         self.assertIn("bytecode ok", outputs)
+
+    def test_pebble_command_launches_target_in_interpreter_mode(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("interp_test.peb")
+        target.write_text('print "interp ok"\n', encoding="utf-8")
+
+        try:
+            with patch.object(shell, "_run_program", wraps=shell._run_program) as mock_run:
+                shell.onecmd("pebble interp_test.peb")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertGreaterEqual(len(mock_run.call_args_list), 2)
+        target_call = mock_run.call_args_list[1]
+        self.assertEqual(target_call.args[0], "interp_test.peb")
+        self.assertEqual(target_call.kwargs.get("exec_mode"), "interp")
 
     def test_runtime_boot_identifies_memory_filesystem(self) -> None:
         shell = build_shell(fs_mode="mfs")

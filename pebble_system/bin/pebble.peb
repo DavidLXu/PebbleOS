@@ -1,0 +1,19 @@
+def rest(items):
+    out = []
+    i = 1
+    while i < len(items):
+        append(out, items[i])
+        i = i + 1
+    return out
+
+def resolved_path(name):
+    return storage_name(normalize_path(name))
+
+if ARGC == 0:
+    print "usage: pebble FILE [ARGS...]"
+else:
+    program = resolved_path(argv(0))
+    if file_exists(program) == 0:
+        print "file '" + program + "' does not exist"
+    else:
+        run_program(program, rest(ARGV))
