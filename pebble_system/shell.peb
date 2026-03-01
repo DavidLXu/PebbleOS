@@ -5,13 +5,15 @@ def shell_prompt():
     return "pebble-os> "
 
 def shell_intro():
-    return "Pebble OS shell\nFlat filesystem: one folder, no subdirectories\nType 'help' for commands."
+    return "Pebble OS shell\nFilesystem mode: " + active_fs_mode() + "\nFlat filesystem: one folder, no subdirectories\nType 'help' for commands."
 
 def shell_dispatch(command, args):
     if command == "help":
         return command_help(args)
     elif command == "ls":
         return command_ls(args)
+    elif command == "time":
+        return command_time(args)
     elif command == "touch":
         return command_touch(args)
     elif command == "edit":
@@ -26,6 +28,8 @@ def shell_dispatch(command, args):
         return command_mv(args)
     elif command == "run":
         return command_run(args)
+    elif command == "exec":
+        return command_exec(args)
     elif command == "nano":
         return command_nano(args)
     elif command == "lang":
@@ -40,14 +44,16 @@ def command_help(args):
     if len(args) == 0:
         print "Pebble OS commands:"
         print "  help [command]  show runtime-managed help"
-        print "  ls              list files in the Pebble OS filesystem"
+        print "  ls              list visible files with timestamps"
+        print "  time            show the current local time"
         print "  touch NAME...   create empty files if needed"
         print "  edit NAME       replace a file"
         print "  cat NAME        show a file"
         print "  rm NAME         delete a file"
         print "  cp SRC DST      copy a file"
         print "  mv SRC DST      move or rename a file"
-        print "  run FILE [ARG]  run a Pebble program with argv support"
+        print "  run FILE [ARG]  run a Pebble program in interpreter mode"
+        print "  exec FILE [ARG] run a Pebble program in bytecode mode"
         print "  nano NAME       open the Pebble editor"
         print "  lang            show Pebble language syntax"
         print "  exit            leave Pebble OS"
@@ -59,7 +65,10 @@ def command_help(args):
         print "show runtime-managed help"
     elif topic == "ls":
         print "ls"
-        print "show all visible files in the Pebble OS filesystem"
+        print "show all visible files in the active filesystem backend"
+    elif topic == "time":
+        print "time"
+        print "show the current local time as YYYY-MM-DD, HH:MM"
     elif topic == "touch":
         print "touch NAME..."
         print "create empty files if they do not exist"
@@ -80,7 +89,10 @@ def command_help(args):
         print "move or rename a file using Pebble runtime"
     elif topic == "run":
         print "run FILE [ARGS...]"
-        print "run a Pebble program with ARGV and ARGC"
+        print "run a Pebble program with ARGV and ARGC in interpreter mode"
+    elif topic == "exec":
+        print "exec FILE [ARGS...]"
+        print "run a Pebble program with ARGV and ARGC in bytecode mode"
     elif topic == "nano":
         print "nano NAME"
         print "open the runtime nano editor from system/nano.peb"
@@ -103,7 +115,14 @@ def command_ls(args):
         print "(empty)"
         return 0
     for name in files:
-        print name
+        print file_time(name) + "  " + name
+    return 0
+
+def command_time(args):
+    if len(args) != 0:
+        print "this command does not take arguments"
+        return 0
+    print current_time()
     return 0
 
 def command_touch(args):
@@ -203,14 +222,55 @@ def command_run(args):
         return 0
     program = args[0]
     extra = rest(args)
-    run_program(program, extra)
+    return dispatch_program(program, extra, "run")
+
+def command_exec(args):
+    if len(args) == 0:
+        print "a file name is required"
+        return 0
+    program = args[0]
+    extra = rest(args)
+    return dispatch_program(program, extra, "exec")
+
+def dispatch_program(program, extra, mode):
+    if not file_exists(program):
+        print "file '" + program + "' does not exist"
+        return 0
+    if is_system_path(program) or fs_run_uses_shadow() == 0:
+        if mode == "exec":
+            exec_program(program, extra)
+        else:
+            run_program(program, extra)
+        return 0
+    raw_write_file(VFS_RUN_SHADOW_FILE, read_file(program))
+    if mode == "exec":
+        exec_program(VFS_RUN_SHADOW_FILE, extra)
+    else:
+        run_program(VFS_RUN_SHADOW_FILE, extra)
+    raw_delete_file(VFS_RUN_SHADOW_FILE)
     return 0
 
 def command_nano(args):
     if len(args) != 1:
         print "a file name is required"
         return 0
-    run_program("system/nano.peb", [args[0]])
+    name = args[0]
+    if is_system_path(name) or fs_run_uses_shadow() == 0:
+        run_program("system/nano.peb", [name])
+        return 0
+    current = ""
+    existed = file_exists(name)
+    if existed:
+        current = read_file(name)
+    raw_write_file(VFS_NANO_SHADOW_FILE, current)
+    run_program("system/nano.peb", [VFS_NANO_SHADOW_FILE])
+    updated = raw_read_file(VFS_NANO_SHADOW_FILE)
+    if existed:
+        if updated != current:
+            write_file(name, updated)
+    elif len(updated) > 0:
+        write_file(name, updated)
+    raw_delete_file(VFS_NANO_SHADOW_FILE)
     return 0
 
 def command_lang(args):
@@ -237,9 +297,17 @@ def command_lang(args):
     print "  def name(arg1, arg2):"
     print "      ... four-space indented block ..."
     print "      return expression"
-    print "Operators: +  -  *  <  >  ==  !=  <=  >=  and parentheses for grouping"
-    print "Values: integers, strings, lists, dicts, variables, indexing, and function calls"
-    print "Builtins: len, append, range, read_file, write_file, str, int, input, argv, keys"
+    print "  import math"
+    print "  import os"
+    print "  import text"
+    print "  import random"
+    print "Operators: +  -  *  /  <  >  ==  !=  <=  >=  and parentheses for grouping"
+    print "Values: integers, floats, strings, lists, dicts, variables, indexing, and function calls"
+    print "Builtins: len, append, range, read_file, write_file, str, int, float, input, argv, keys"
+    print "Modules: math, os, text, random"
+    print "Module calls: math.sin(...), os.read(...), text.lines(...), random.range(...)"
+    print "Runtime math: abs(x), pow(x, n), sqrt(x), sin(deg), cos(deg), tan(deg)"
+    print "Trig returns fixed-point integers scaled by 10000"
     return 0
 
 def command_exit(args):

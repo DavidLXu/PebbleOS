@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 
@@ -56,6 +57,12 @@ class FlatFileSystem:
         if not path.exists():
             raise FileSystemError(f"file '{name}' does not exist")
         return path.read_text(encoding="utf-8")
+
+    def file_time(self, name: str) -> str:
+        path = self.resolve_path(name)
+        if not path.exists():
+            raise FileSystemError(f"file '{name}' does not exist")
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d, %H:%M")
 
     def resolve_path(self, name: str) -> Path:
         cleaned = name.strip()

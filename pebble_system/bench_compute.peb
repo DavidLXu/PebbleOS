@@ -1,0 +1,21 @@
+def build_values(limit):
+    values = []
+    i = 0
+    while i < limit:
+        append(values, i)
+        i = i + 1
+    return values
+
+def weighted_sum(values, rounds):
+    total = 0
+    r = 0
+    while r < rounds:
+        i = 0
+        while i < len(values):
+            total = total + values[i] * (r + 1)
+            i = i + 1
+        r = r + 1
+    return total
+
+items = build_values(2000)
+print weighted_sum(items, 30)

@@ -1,0 +1,134 @@
+def make_row(width, fill):
+    out = ""
+    i = 0
+    while i < width:
+        out = out + fill
+        i = i + 1
+    return out
+
+def clamp_paddle(value, left_wall, right_wall, paddle_width):
+    if value < left_wall:
+        return left_wall
+    if value + paddle_width - 1 > right_wall:
+        return right_wall - paddle_width + 1
+    return value
+
+def draw_board(width, height, paddle_x, paddle_width, ball_x, ball_y, score, message):
+    clear_screen()
+    move_cursor(1, 1)
+    draw_text("ATARI PONG  SCORE " + str(score) + "  A/D move  Q quit")
+
+    top = "+" + make_row(width - 2, "-") + "+"
+    empty = "|" + make_row(width - 2, " ") + "|"
+
+    move_cursor(2, 1)
+    draw_text(top)
+
+    y = 0
+    while y < height - 2:
+        move_cursor(y + 3, 1)
+        draw_text(empty)
+        y = y + 1
+
+    move_cursor(height + 1, 1)
+    draw_text(top)
+
+    move_cursor(ball_y + 2, ball_x)
+    draw_text("O")
+
+    paddle = make_row(paddle_width, "=")
+    move_cursor(height, paddle_x)
+    draw_text(paddle)
+
+    move_cursor(height + 2, 1)
+    draw_text(pad_right(message, width))
+    flush_screen()
+    return 0
+
+def update_ball(width, height, paddle_x, paddle_width, ball_x, ball_y, dx, dy, score):
+    next_x = ball_x + dx
+    next_y = ball_y + dy
+    message = "Keep the ball alive."
+    alive = 1
+
+    if next_x <= 2:
+        dx = 1
+        next_x = 3
+    elif next_x >= width - 1:
+        dx = -1
+        next_x = width - 2
+
+    if next_y <= 2:
+        dy = 1
+        next_y = 3
+
+    if next_y == height:
+        if next_x >= paddle_x and next_x < paddle_x + paddle_width:
+            dy = -1
+            next_y = height - 1
+            score = score + 1
+            if next_x < paddle_x + 2:
+                dx = -1
+            elif next_x > paddle_x + paddle_width - 3:
+                dx = 1
+            message = "Nice return."
+        else:
+            alive = 0
+            message = "Game over. Final score " + str(score) + "."
+
+    return [next_x, next_y, dx, dy, score, message, alive]
+
+width = 40
+height = 14
+paddle_width = 7
+paddle_x = 17
+ball_x = 20
+ball_y = 8
+dx = 1
+dy = -1
+score = 0
+running = 1
+message = "Keep the ball alive."
+tick = 0
+speed = 5
+
+hide_cursor()
+
+while running:
+    draw_board(width, height, paddle_x, paddle_width, ball_x, ball_y, score, message)
+    key = read_key_timeout(120)
+
+    if key == "":
+        tick = tick + 1
+    else:
+        tick = tick + 1
+
+    if key == "q" or key == "Q" or key == "ESC":
+        running = 0
+    elif key == "a" or key == "A" or key == "LEFT":
+        paddle_x = clamp_paddle(paddle_x - 2, 2, width - 1, paddle_width)
+    elif key == "d" or key == "D" or key == "RIGHT":
+        paddle_x = clamp_paddle(paddle_x + 2, 2, width - 1, paddle_width)
+
+    if running and tick >= speed:
+        tick = 0
+        result = update_ball(width, height, paddle_x, paddle_width, ball_x, ball_y, dx, dy, score)
+        ball_x = result[0]
+        ball_y = result[1]
+        dx = result[2]
+        dy = result[3]
+        score = result[4]
+        message = result[5]
+        if result[6] == 0:
+            draw_board(width, height, paddle_x, paddle_width, ball_x, ball_y, score, message + " Press Q.")
+            waiting = 1
+            while waiting:
+                key = read_key_timeout(120)
+                if key == "q" or key == "Q" or key == "ESC" or key == "ENTER":
+                    waiting = 0
+                    running = 0
+
+clear_screen()
+move_cursor(1, 1)
+show_cursor()
+print "ATARI PONG over. Score " + str(score)

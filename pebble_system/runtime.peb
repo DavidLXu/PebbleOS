@@ -1,3 +1,7 @@
+VFS_BACKING_FILE = ".__pebble_vfs__.db"
+VFS_RUN_SHADOW_FILE = ".__pebble_run_shadow__.peb"
+VFS_NANO_SHADOW_FILE = ".__pebble_nano_shadow__.txt"
+
 def count_lines(text):
     if len(text) == 0:
         return 0
@@ -134,6 +138,511 @@ def delete_line(lines, row):
         return [""]
     return out
 
+def starts_with(text, prefix):
+    if len(prefix) > len(text):
+        return 0
+    i = 0
+    while i < len(prefix):
+        if text[i] != prefix[i]:
+            return 0
+        i = i + 1
+    return 1
+
+def find_char(text, target, start_index):
+    i = start_index
+    while i < len(text):
+        if text[i] == target:
+            return i
+        i = i + 1
+    return -1
+
+def dict_has_key(data, key):
+    names = keys(data)
+    i = 0
+    while i < len(names):
+        if names[i] == key:
+            return 1
+        i = i + 1
+    return 0
+
+def sort_strings(items):
+    out = []
+    i = 0
+    while i < len(items):
+        item = items[i]
+        inserted = 0
+        temp = []
+        j = 0
+        while j < len(out):
+            if inserted == 0 and item < out[j]:
+                append(temp, item)
+                inserted = 1
+            append(temp, out[j])
+            j = j + 1
+        if inserted == 0:
+            append(temp, item)
+        out = temp
+        i = i + 1
+    return out
+
+SIN_SCALE = 10000
+SIN_TABLE = [0, 175, 349, 523, 698, 872, 1045, 1219, 1392, 1564, 1736, 1908, 2079, 2250, 2419, 2588, 2756, 2924, 3090, 3256, 3420, 3584, 3746, 3907, 4067, 4226, 4384, 4540, 4695, 4848, 5000, 5150, 5299, 5446, 5592, 5736, 5878, 6018, 6157, 6293, 6428, 6561, 6691, 6820, 6947, 7071, 7193, 7314, 7431, 7547, 7660, 7771, 7880, 7986, 8090, 8192, 8290, 8387, 8480, 8572, 8660, 8746, 8829, 8910, 8988, 9063, 9135, 9205, 9272, 9336, 9397, 9455, 9511, 9563, 9613, 9659, 9703, 9744, 9781, 9816, 9848, 9877, 9903, 9925, 9945, 9962, 9976, 9986, 9994, 9998, 10000]
+
+def abs(value):
+    if value < 0:
+        return 0 - value
+    return value
+
+def int_div(dividend, divisor):
+    if divisor == 0:
+        runtime_fail("division by zero")
+    sign = 1
+    left = dividend
+    right = divisor
+    if left < 0:
+        sign = 0 - sign
+        left = abs(left)
+    if right < 0:
+        sign = 0 - sign
+        right = abs(right)
+    quotient = 0
+    total = left
+    while total >= right:
+        total = total - right
+        quotient = quotient + 1
+    if sign < 0:
+        return 0 - quotient
+    return quotient
+
+def int_mod(dividend, divisor):
+    if divisor == 0:
+        runtime_fail("division by zero")
+    left = abs(dividend)
+    right = abs(divisor)
+    while left >= right:
+        left = left - right
+    if dividend < 0 and left != 0:
+        return 0 - left
+    return left
+
+def pow(base, exponent):
+    if exponent < 0:
+        runtime_fail("pow() only supports non-negative integer exponents")
+    result = 1
+    i = 0
+    while i < exponent:
+        result = result * base
+        i = i + 1
+    return result
+
+def sqrt(value):
+    if value < 0:
+        runtime_fail("sqrt() requires a non-negative integer")
+    low = 0
+    high = value
+    answer = 0
+    while low <= high:
+        mid = int_div(low + high, 2)
+        square = mid * mid
+        if square == value:
+            return mid
+        if square < value:
+            answer = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+    return answer
+
+def normalize_degrees(angle):
+    value = angle
+    while value < 0:
+        value = value + 360
+    while value >= 360:
+        value = value - 360
+    return value
+
+def sin_lookup(angle):
+    return SIN_TABLE[angle]
+
+def sin(angle):
+    normalized = normalize_degrees(angle)
+    if normalized <= 90:
+        return sin_lookup(normalized)
+    if normalized <= 180:
+        return sin_lookup(180 - normalized)
+    if normalized <= 270:
+        return 0 - sin_lookup(normalized - 180)
+    return 0 - sin_lookup(360 - normalized)
+
+def cos(angle):
+    return sin(90 - angle)
+
+def tan(angle):
+    c = cos(angle)
+    if c == 0:
+        runtime_fail("tan() is undefined for this angle")
+    return int_div(sin(angle) * SIN_SCALE, c)
+
+RANDOM_BOX = {"state": 1}
+
+def text_len(text):
+    return len(text)
+
+def text_repeat(text, count):
+    return repeat_text(text, count)
+
+def text_lines(text):
+    return split_lines(text)
+
+def text_join(lines):
+    return join_lines(lines)
+
+def text_first_line(text):
+    return first_line(text)
+
+def os_list():
+    return list_files()
+
+def os_exists(name):
+    return file_exists(name)
+
+def os_read(name):
+    return read_file(name)
+
+def os_write(name, text):
+    return write_file(name, text)
+
+def os_delete(name):
+    delete_file(name)
+    return 0
+
+def os_time(name):
+    return file_time(name)
+
+def random_seed(value):
+    RANDOM_BOX["state"] = value
+    return RANDOM_BOX["state"]
+
+def random_next():
+    value = RANDOM_BOX["state"] * 25173 + 13849
+    while value < 0:
+        value = value + 65536
+    while value >= 65536:
+        value = value - 65536
+    RANDOM_BOX["state"] = value
+    return RANDOM_BOX["state"]
+
+def random_range(low, high):
+    if high <= low:
+        runtime_fail("random.range() requires high > low")
+    span = high - low
+    return low + int_mod(random_next(), span)
+
+def escape_text(text):
+    out = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            out = out + "\\\\"
+        elif ch == "\n":
+            out = out + "\\n"
+        elif ch == "\t":
+            out = out + "\\t"
+        elif ch == "\r":
+            out = out + "\\r"
+        else:
+            out = out + ch
+        i = i + 1
+    return out
+
+def unescape_text(text):
+    out = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt == "n":
+                out = out + "\n"
+            elif nxt == "t":
+                out = out + "\t"
+            elif nxt == "r":
+                out = out + "\r"
+            else:
+                out = out + nxt
+            i = i + 2
+        else:
+            out = out + ch
+            i = i + 1
+    return out
+
+def active_fs_mode():
+    return FS_MODE
+
+def is_system_path(name):
+    return starts_with(name, "system/")
+
+def is_hostfs_mode():
+    return active_fs_mode() == "hostfs"
+
+def is_vfs_mode():
+    mode = active_fs_mode()
+    if mode == "vfs-import":
+        return 1
+    if mode == "vfs-persistent":
+        return 1
+    return 0
+
+def vfs_boot_mode():
+    return active_fs_mode() == "vfs-import"
+
+def user_path_error(name):
+    if len(name) == 0:
+        return "file name cannot be empty"
+    if name == "." or name == "..":
+        return "invalid file name"
+    if find_char(name, "\\", 0) >= 0:
+        return "invalid file name"
+    if find_char(name, "/", 0) >= 0:
+        return "the Pebble OS filesystem is flat; subfolders are only allowed through mounts"
+    return ""
+
+def runtime_fail(message):
+    runtime_error(message)
+    return 0
+
+def empty_vfs():
+    return {"files": {}}
+
+def parse_vfs_record(line):
+    first_tab = find_char(line, "\t", 0)
+    second_tab = find_char(line, "\t", first_tab + 1)
+    if first_tab < 0 or second_tab < 0:
+        runtime_fail("invalid Pebble filesystem backing store")
+    name = unescape_text(slice_text(line, 0, first_tab))
+    stamp = unescape_text(slice_text(line, first_tab + 1, second_tab))
+    content = unescape_text(slice_text(line, second_tab + 1, len(line)))
+    return [name, {"mtime": stamp, "content": content}]
+
+def parse_vfs(text):
+    db = empty_vfs()
+    if len(text) == 0:
+        return db
+    lines = split_lines(text)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if len(line) > 0:
+            record = parse_vfs_record(line)
+            files = db["files"]
+            files[record[0]] = record[1]
+            db["files"] = files
+        i = i + 1
+    return db
+
+def dump_vfs(db):
+    files = db["files"]
+    names = sort_strings(keys(files))
+    lines = []
+    i = 0
+    while i < len(names):
+        name = names[i]
+        record = files[name]
+        append(lines, escape_text(name) + "\t" + escape_text(record["mtime"]) + "\t" + escape_text(record["content"]))
+        i = i + 1
+    return join_lines(lines)
+
+def save_vfs(db):
+    raw_write_file(VFS_BACKING_FILE, dump_vfs(db))
+    return 0
+
+def should_import_host_file(name):
+    if name == VFS_BACKING_FILE:
+        return 0
+    if name == VFS_RUN_SHADOW_FILE or name == VFS_NANO_SHADOW_FILE:
+        return 0
+    if starts_with(name, ".__pebble_shadow__"):
+        return 0
+    if is_system_path(name):
+        return 0
+    return 1
+
+def import_host_files_to_vfs():
+    db = empty_vfs()
+    host_names = raw_list_files()
+    i = 0
+    while i < len(host_names):
+        name = host_names[i]
+        if should_import_host_file(name):
+            files = db["files"]
+            files[name] = {"mtime": raw_file_time(name), "content": raw_read_file(name)}
+            db["files"] = files
+        i = i + 1
+    save_vfs(db)
+    return db
+
+def load_vfs():
+    if vfs_boot_mode():
+        return import_host_files_to_vfs()
+    if raw_file_exists(VFS_BACKING_FILE):
+        return parse_vfs(raw_read_file(VFS_BACKING_FILE))
+    return import_host_files_to_vfs()
+
+def get_vfs_user_record(name):
+    error = user_path_error(name)
+    if len(error) > 0:
+        runtime_fail(error)
+    db = load_vfs()
+    files = db["files"]
+    if not dict_has_key(files, name):
+        runtime_fail("file '" + name + "' does not exist")
+    return files[name]
+
+def set_vfs_user_record(name, content, require_existing):
+    error = user_path_error(name)
+    if len(error) > 0:
+        runtime_fail(error)
+    db = load_vfs()
+    files = db["files"]
+    exists = dict_has_key(files, name)
+    if require_existing and exists == 0:
+        runtime_fail("file '" + name + "' does not exist")
+    files[name] = {"mtime": current_time(), "content": content}
+    db["files"] = files
+    save_vfs(db)
+    return 0
+
+def create_vfs_user_record(name, content):
+    error = user_path_error(name)
+    if len(error) > 0:
+        runtime_fail(error)
+    db = load_vfs()
+    files = db["files"]
+    if dict_has_key(files, name):
+        runtime_fail("file '" + name + "' already exists")
+    files[name] = {"mtime": current_time(), "content": content}
+    db["files"] = files
+    save_vfs(db)
+    return 0
+
+def delete_vfs_user_record(name):
+    error = user_path_error(name)
+    if len(error) > 0:
+        runtime_fail(error)
+    db = load_vfs()
+    files = db["files"]
+    if dict_has_key(files, name) == 0:
+        runtime_fail("file '" + name + "' does not exist")
+    names = keys(files)
+    rebuilt = {}
+    i = 0
+    while i < len(names):
+        key = names[i]
+        if key != name:
+            rebuilt[key] = files[key]
+        i = i + 1
+    db["files"] = rebuilt
+    save_vfs(db)
+    return 0
+
+def fs_list():
+    if is_hostfs_mode():
+        return sort_strings(raw_list_files())
+    db = load_vfs()
+    names = sort_strings(keys(db["files"]))
+    host_names = raw_list_files()
+    i = 0
+    while i < len(host_names):
+        name = host_names[i]
+        if is_system_path(name):
+            append(names, name)
+        i = i + 1
+    return sort_strings(names)
+
+def fs_exists(name):
+    if is_hostfs_mode():
+        return raw_file_exists(name)
+    if is_system_path(name):
+        return raw_file_exists(name)
+    error = user_path_error(name)
+    if len(error) > 0:
+        return 0
+    db = load_vfs()
+    return dict_has_key(db["files"], name)
+
+def fs_create(name, text):
+    if is_hostfs_mode():
+        return raw_create_file(name, text)
+    if is_system_path(name):
+        return raw_create_file(name, text)
+    return create_vfs_user_record(name, text)
+
+def fs_modify(name, text):
+    if is_hostfs_mode():
+        return raw_modify_file(name, text)
+    if is_system_path(name):
+        return raw_modify_file(name, text)
+    return set_vfs_user_record(name, text, 1)
+
+def fs_delete(name):
+    if is_hostfs_mode():
+        return raw_delete_file(name)
+    if is_system_path(name):
+        return raw_delete_file(name)
+    return delete_vfs_user_record(name)
+
+def fs_read(name):
+    if is_hostfs_mode():
+        return raw_read_file(name)
+    if is_system_path(name):
+        return raw_read_file(name)
+    record = get_vfs_user_record(name)
+    return record["content"]
+
+def fs_write(name, text):
+    if is_hostfs_mode():
+        return raw_write_file(name, text)
+    if is_system_path(name):
+        return raw_write_file(name, text)
+    set_vfs_user_record(name, text, 0)
+    return text
+
+def fs_time(name):
+    if is_hostfs_mode():
+        return raw_file_time(name)
+    if is_system_path(name):
+        return raw_file_time(name)
+    record = get_vfs_user_record(name)
+    return record["mtime"]
+
+def fs_run_uses_shadow():
+    return is_vfs_mode()
+
+def list_files():
+    return fs_list()
+
+def file_exists(name):
+    return fs_exists(name)
+
+def create_file(name, text):
+    return fs_create(name, text)
+
+def modify_file(name, text):
+    return fs_modify(name, text)
+
+def delete_file(name):
+    return fs_delete(name)
+
+def read_file(name):
+    return fs_read(name)
+
+def write_file(name, text):
+    return fs_write(name, text)
+
+def file_time(name):
+    return fs_time(name)
+
 def term_write_line(text):
     term_write(text + "\r\n")
 
@@ -161,6 +670,9 @@ def flush_screen():
 def read_key():
     return term_read_key()
 
+def read_key_timeout(timeout_ms):
+    return term_read_key_timeout(timeout_ms)
+
 def draw_text(text):
     term_write(text)
 
@@ -168,8 +680,17 @@ def runtime_banner():
     return "[runtime] Pebble runtime booting"
 
 def boot():
+    if is_vfs_mode():
+        load_vfs()
     print runtime_banner()
+    print "[runtime] filesystem files: " + str(filesystem_file_count())
+    print "[runtime] filesystem bytes: " + str(filesystem_total_bytes())
     print "[runtime] shell module: " + SYSTEM_SHELL_PATH
     print "[runtime] shell lines: " + str(count_lines(SYSTEM_SHELL_SOURCE))
     print "[runtime] shell head: " + first_line(SYSTEM_SHELL_SOURCE)
+    print "[runtime] filesystem mode: " + active_fs_mode()
+    if is_vfs_mode():
+        print "[runtime] user filesystem: Pebble-managed virtual disk"
+    else:
+        print "[runtime] user filesystem: host flat filesystem"
     print "[runtime] boot complete"
