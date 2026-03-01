@@ -1,0 +1,7 @@
+import system.kernel.proc
+
+if ARGC != 1:
+    print "kill requires exactly one pid"
+else:
+    result = system.kernel.proc.process_kill(int(argv(0)))
+    print "killed " + str(result["pid"])

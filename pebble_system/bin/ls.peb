@@ -1,0 +1,11 @@
+if ARGC != 0:
+    print "this command does not take arguments"
+else:
+    files = list_files()
+    if len(files) == 0:
+        print "(empty)"
+    else:
+        i = 0
+        while i < len(files):
+            print file_time(files[i]) + "  " + files[i]
+            i = i + 1

@@ -1,4 +1,5 @@
 import system.kernel.proc
+import system.lib.path
 
 def shell_name():
     return "Pebble Runtime Shell"
@@ -12,32 +13,12 @@ def shell_intro():
 def shell_dispatch(command, args):
     if command == "help":
         return command_help(args)
-    elif command == "ls":
-        return command_ls(args)
     elif command == "cd":
         return command_cd(args)
-    elif command == "pwd":
-        return command_pwd(args)
-    elif command == "mkdir":
-        return command_mkdir(args)
-    elif command == "rmdir":
-        return command_rmdir(args)
-    elif command == "time":
-        return command_time(args)
-    elif command == "sync":
-        return command_sync(args)
-    elif command == "touch":
-        return command_touch(args)
-    elif command == "edit":
-        return command_edit(args)
-    elif command == "cat":
-        return command_cat(args)
-    elif command == "rm":
-        return command_rm(args)
-    elif command == "cp":
-        return command_cp(args)
-    elif command == "mv":
-        return command_mv(args)
+    elif command == "export":
+        return command_export(args)
+    elif command == "set":
+        return command_set(args)
     elif command == "run":
         return command_run(args)
     elif command == "runbg":
@@ -52,40 +33,42 @@ def shell_dispatch(command, args):
         return command_jobs(args)
     elif command == "fg":
         return command_fg(args)
+    elif command == "bg":
+        return command_bg(args)
     elif command == "nano":
         return command_nano(args)
-    elif command == "lang":
-        return command_lang(args)
+    elif command == "source":
+        return command_source(args)
     elif command == "exit":
         return command_exit(args)
     else:
-        print "*** unknown command: " + command
-    return 0
+        return dispatch_external_command(command, args)
 
 def command_help(args):
     if len(args) == 0:
         print "Pebble OS commands:"
         print "  help [command]  show runtime-managed help"
-        print "  ls              list visible files with timestamps"
         print "  cd PATH         change the current directory"
-        print "  pwd             print the current directory"
-        print "  mkdir PATH      create a directory"
-        print "  rmdir PATH      remove an empty directory"
-        print "  time            show the current local time"
-        print "  sync            write the memory filesystem snapshot to disk"
-        print "  touch NAME...   create empty files if needed"
-        print "  edit NAME       replace a file"
-        print "  cat NAME        show a file"
-        print "  rm NAME         delete a file"
-        print "  cp SRC DST      copy a file"
-        print "  mv SRC DST      move or rename a file"
-        print "  run FILE [ARG]  run a Pebble program in interpreter mode"
-        print "  runbg FILE [A]  run a non-interactive Pebble program in the background"
-        print "  exec FILE [ARG] run a Pebble program in bytecode mode"
-        print "  execbg FILE [A] run a non-interactive bytecode Pebble program in the background"
+        print "  export NAME=V   persist an environment variable"
+        print "  set [NAME=V]    show or update shell environment"
+        print "  run FILE [ARG]  compatibility launcher for interpreter mode"
+        print "  runbg FILE [A]  compatibility launcher for background interpreter mode"
+        print "  exec FILE [ARG] compatibility launcher for bytecode mode"
+        print "  execbg FILE [A] compatibility launcher for background bytecode mode"
         print "  ps              list system-visible processes and tasks"
         print "  jobs            list background jobs"
         print "  fg ID           wait for a background job and print its output"
+        print "  bg ID           keep an existing job in the background"
+        print "  source FILE     run shell commands from a file in the current shell"
+        print "  preferred run   COMMAND [ARGS...] or COMMAND &"
+        print "  external tools  ls, pwd, mkdir, rmdir, time, sync, touch"
+        print "                  edit, cat, head, tail, rm, cp, mv"
+        print "                  echo, wc, lang, env, which, find, grep, kill, top, sh, bash"
+        print "                  from PATH: " + current_path()
+        print "  cmd &           run external commands and Pebble programs in background"
+        print "  >, >>, <        shell redirection for single commands"
+        print "  2>, 2>&1        stderr redirection for shell-level errors"
+        print "  cmd1 | cmd2     pipeline between commands"
         print "  nano NAME       open the Pebble editor"
         print "  lang            show Pebble language syntax"
         print "  exit            leave Pebble OS"
@@ -95,57 +78,27 @@ def command_help(args):
     if topic == "help":
         print "help [command]"
         print "show runtime-managed help"
-    elif topic == "ls":
-        print "ls"
-        print "show all visible files in the active filesystem backend"
     elif topic == "cd":
         print "cd PATH"
         print "change the current directory"
-    elif topic == "pwd":
-        print "pwd"
-        print "print the current directory"
-    elif topic == "mkdir":
-        print "mkdir PATH"
-        print "create a directory"
-    elif topic == "rmdir":
-        print "rmdir PATH"
-        print "remove an empty directory and warn if it contains files"
-    elif topic == "time":
-        print "time"
-        print "show the current local time as YYYY-MM-DD, HH:MM"
-    elif topic == "sync":
-        print "sync"
-        print "write the current memory filesystem snapshot to .__pebble_vfs__.db"
-    elif topic == "touch":
-        print "touch NAME..."
-        print "create empty files if they do not exist"
-    elif topic == "edit":
-        print "edit NAME"
-        print "replace the contents of an existing file"
-    elif topic == "cat":
-        print "cat NAME"
-        print "display a file"
-    elif topic == "rm":
-        print "rm NAME"
-        print "delete a file"
-    elif topic == "cp":
-        print "cp SRC DST"
-        print "copy a file using Pebble runtime"
-    elif topic == "mv":
-        print "mv SRC DST"
-        print "move or rename a file using Pebble runtime"
+    elif topic == "export":
+        print "export NAME=VALUE"
+        print "persist an environment variable in the shell"
+    elif topic == "set":
+        print "set [NAME=VALUE]"
+        print "show all environment variables or update one"
     elif topic == "run":
         print "run FILE [ARGS...]"
-        print "run a Pebble program with ARGV and ARGC in interpreter mode"
+        print "compatibility launcher for Pebble interpreter mode"
     elif topic == "runbg":
         print "runbg FILE [ARGS...]"
-        print "run a non-interactive Pebble program in the background"
+        print "compatibility launcher for Pebble background interpreter mode"
     elif topic == "exec":
         print "exec FILE [ARGS...]"
-        print "run a Pebble program with ARGV and ARGC in bytecode mode"
+        print "compatibility launcher for Pebble bytecode mode"
     elif topic == "execbg":
         print "execbg FILE [ARGS...]"
-        print "run a non-interactive bytecode Pebble program in the background"
+        print "compatibility launcher for Pebble background bytecode mode"
     elif topic == "ps":
         print "ps"
         print "list system-visible Pebble tasks and host-managed background jobs"
@@ -155,29 +108,34 @@ def command_help(args):
     elif topic == "fg":
         print "fg ID"
         print "wait for a background job, print its output, and remove it from the job table"
+    elif topic == "bg":
+        print "bg ID"
+        print "mark an existing job as continuing in the background"
+    elif topic == ">":
+        print "COMMAND > FILE"
+        print "redirect command output into FILE"
+    elif topic == "2>":
+        print "COMMAND 2> FILE"
+        print "redirect shell-level stderr into FILE"
+    elif topic == "|":
+        print "COMMAND1 | COMMAND2 [| COMMAND3 ...]"
+        print "pipe stdout from each command into stdin for the next command"
+    elif topic == "&":
+        print "COMMAND &"
+        print "run a command in the background when supported"
     elif topic == "nano":
         print "nano NAME"
         print "open the runtime nano editor from system/nano.peb"
-    elif topic == "lang":
-        print "lang"
-        print "show the Pebble language syntax"
+    elif topic == "source":
+        print "source FILE"
+        print "execute shell commands from FILE in the current shell"
     elif topic == "exit":
         print "exit"
         print "leave Pebble OS"
     else:
+        if print_external_command_help(topic):
+            return 0
         print "*** no help on " + args[0]
-    return 0
-
-def command_ls(args):
-    if len(args) != 0:
-        print "this command does not take arguments"
-        return 0
-    files = list_files()
-    if len(files) == 0:
-        print "(empty)"
-        return 0
-    for name in files:
-        print file_time(name) + "  " + name
     return 0
 
 def command_cd(args):
@@ -186,142 +144,24 @@ def command_cd(args):
         return 0
     return chdir(args[0])
 
-def command_pwd(args):
-    if len(args) != 0:
-        print "this command does not take arguments"
-        return 0
-    print cwd()
-    return 0
-
-def command_mkdir(args):
+def command_export(args):
     if len(args) != 1:
-        print "mkdir requires exactly one path"
+        print "export requires exactly one NAME=VALUE pair"
         return 0
-    make_directory(args[0])
-    return 0
+    return assign_env_pair(args[0], 1)
 
-def command_rmdir(args):
-    if len(args) != 1:
-        print "rmdir requires exactly one path"
-        return 0
-    name = args[0]
-    if not directory_exists(name):
-        print "directory '" + name + "' does not exist"
-        return 0
-    if not directory_empty(name):
-        print "notice: directory '" + name + "' is not empty"
-        return 0
-    remove_directory(name)
-    return 0
-
-def command_time(args):
-    if len(args) != 0:
-        print "this command does not take arguments"
-        return 0
-    print current_time()
-    return 0
-
-def command_sync(args):
-    if len(args) != 0:
-        print "this command does not take arguments"
-        return 0
-    if active_fs_mode() != "mfs" and active_fs_mode() != "mfs-import":
-        print "sync is only available in mfs and mfs-import"
-        return 0
-    sync_filesystem()
-    print "synced memory filesystem to .__pebble_vfs__.db"
-    return 0
-
-def command_touch(args):
+def command_set(args):
     if len(args) == 0:
-        print "at least one file name is required"
+        names = keys(ENV)
+        i = 0
+        while i < len(names):
+            print names[i] + "=" + str(ENV[names[i]])
+            i = i + 1
         return 0
-    i = 0
-    while i < len(args):
-        name = args[i]
-        if not file_exists(name):
-            create_file(name, "")
-        i = i + 1
-    return 0
-
-def command_edit(args):
     if len(args) != 1:
-        print "a file name is required"
+        print "set accepts zero arguments or one NAME=VALUE pair"
         return 0
-    name = args[0]
-    if not file_exists(name):
-        print "file '" + name + "' does not exist"
-        return 0
-    current = read_file(name)
-    print "current contents:"
-    if current:
-        print current
-    else:
-        print "(empty)"
-    print "enter new contents:"
-    text = capture_text()
-    modify_file(name, text)
-    print "updated " + name
-    return 0
-
-def command_cat(args):
-    if len(args) != 1:
-        print "a file name is required"
-        return 0
-    name = args[0]
-    if not file_exists(name):
-        print "file '" + name + "' does not exist"
-        return 0
-    text = read_file(name)
-    if text:
-        print text
-    else:
-        print "(empty)"
-    return 0
-
-def command_rm(args):
-    if len(args) != 1:
-        print "a file name is required"
-        return 0
-    name = args[0]
-    delete_file(name)
-    print "deleted " + name
-    return 0
-
-def command_cp(args):
-    if len(args) != 2:
-        print "cp requires a source and destination"
-        return 0
-    src = args[0]
-    dst = args[1]
-    if not file_exists(src):
-        print "file '" + src + "' does not exist"
-        return 0
-    if src == dst:
-        print "source and destination are the same"
-        return 0
-    text = read_file(src)
-    write_file(dst, text)
-    print "copied " + src + " to " + dst
-    return 0
-
-def command_mv(args):
-    if len(args) != 2:
-        print "mv requires a source and destination"
-        return 0
-    src = args[0]
-    dst = args[1]
-    if not file_exists(src):
-        print "file '" + src + "' does not exist"
-        return 0
-    if src == dst:
-        print "source and destination are the same"
-        return 0
-    text = read_file(src)
-    write_file(dst, text)
-    delete_file(src)
-    print "moved " + src + " to " + dst
-    return 0
+    return assign_env_pair(args[0], 0)
 
 def command_run(args):
     if len(args) == 0:
@@ -329,6 +169,8 @@ def command_run(args):
         return 0
     program = resolved_path(args[0])
     extra = rest(args)
+    if launch_background():
+        return dispatch_background_program(program, extra, "interp")
     return dispatch_program(program, extra, "run")
 
 def command_exec(args):
@@ -337,6 +179,8 @@ def command_exec(args):
         return 0
     program = resolved_path(args[0])
     extra = rest(args)
+    if launch_background():
+        return dispatch_background_program(program, extra, "bytecode")
     return dispatch_program(program, extra, "exec")
 
 def command_runbg(args):
@@ -394,6 +238,17 @@ def command_fg(args):
         i = i + 1
     return 0
 
+def command_bg(args):
+    if len(args) != 1:
+        print "bg requires exactly one job id"
+        return 0
+    lines = system.kernel.proc.process_background(int(args[0]))
+    i = 0
+    while i < len(lines):
+        print lines[i]
+        i = i + 1
+    return 0
+
 def dispatch_program(program, extra, mode):
     if not file_exists(program):
         print "file '" + program + "' does not exist"
@@ -440,45 +295,11 @@ def command_nano(args):
     raw_delete_file(VFS_NANO_SHADOW_FILE)
     return 0
 
-def command_lang(args):
-    if len(args) != 0:
-        print "this command does not take arguments"
+def command_source(args):
+    if len(args) != 1:
+        print "source requires exactly one file"
         return 0
-    print "Pebble syntax:"
-    print "  name = expression"
-    print "  items[index] = expression"
-    print "  print expression"
-    print "  pass"
-    print "  break"
-    print "  continue"
-    print "  if expression:"
-    print "      ... four-space indented block ..."
-    print "  elif expression:"
-    print "      ... four-space indented block ..."
-    print "  else:"
-    print "      ... four-space indented block ..."
-    print "  while expression:"
-    print "      ... four-space indented block ..."
-    print "  for name in range(...):"
-    print "      ... four-space indented block ..."
-    print "  def name(arg1, arg2):"
-    print "      ... four-space indented block ..."
-    print "      return expression"
-    print "  import math"
-    print "  import os"
-    print "  import text"
-    print "  import random"
-    print "  import memory"
-    print "  import heap"
-    print "Operators: +  -  *  /  <  >  ==  !=  <=  >=  and parentheses for grouping"
-    print "Values: integers, floats, strings, lists, dicts, variables, indexing, and function calls"
-    print "Builtins: len, append, range, read_file, write_file, str, int, float, input, argv, keys"
-    print "Modules: math, os, text, random, memory, heap"
-    print "Module calls: math.sin(...), os.read(...), text.lines(...), random.range(...), memory.read(...), heap.alloc(...)"
-    print "Runtime math: abs(x), pow(x, n), sqrt(x), sin(deg), cos(deg), tan(deg)"
-    print "Runtime RAM: memory.init(n), memory.copy(src, dst, n), memory.slice(base, n), memory.alloc(n)"
-    print "Runtime heap: heap.init(n), heap.alloc(kind, payload), heap.read(ptr, i), heap.write(ptr, i, value)"
-    print "Trig returns fixed-point integers scaled by 10000"
+    source_shell_script(args[0])
     return 0
 
 def command_exit(args):
@@ -486,6 +307,14 @@ def command_exit(args):
         print "this command does not take arguments"
         return 0
     return "__exit__"
+
+def print_external_command_help(command):
+    program = find_external_command(command)
+    if program == "":
+        return 0
+    print command + " [args...]"
+    print "external command from /" + program
+    return 1
 
 def rest(items):
     out = []
@@ -497,3 +326,59 @@ def rest(items):
 
 def resolved_path(name):
     return storage_name(normalize_path(name))
+
+def external_command_path(command):
+    return "system/bin/" + command + ".peb"
+
+def find_external_command(command):
+    return system.lib.path.find_command_path(command, current_path())
+
+def has_suffix(text, suffix):
+    if len(text) < len(suffix):
+        return 0
+    start = len(text) - len(suffix)
+    i = 0
+    while i < len(suffix):
+        if text[start + i] != suffix[i]:
+            return 0
+        i = i + 1
+    return 1
+
+def find_launchable_program(command):
+    external = find_external_command(command)
+    if external != "":
+        return external
+    candidate = command
+    if system.lib.path.has_slash(command) == 0 and has_suffix(command, ".peb") == 0:
+        candidate = command + ".peb"
+    program = resolved_path(candidate)
+    if file_exists(program):
+        return program
+    return ""
+
+def current_path():
+    return system.lib.path.env_value(ENV, "PATH", "/system/bin:/system/sbin:/bin")
+
+def assign_env_pair(text, quiet):
+    pair = system.lib.path.split_assignment(text)
+    name = pair["name"]
+    value = pair["value"]
+    if name == "":
+        print "invalid environment assignment"
+        return 0
+    ENV[name] = value
+    if quiet == 0:
+        print name + "=" + value
+    return 0
+
+def launch_background():
+    return system.lib.path.env_value(ENV, "PEBBLE_SHELL_BG", "0") == "1"
+
+def dispatch_external_command(command, args):
+    program = find_launchable_program(command)
+    if program == "":
+        print "*** unknown command: " + command
+        return 0
+    if launch_background():
+        return dispatch_background_program(program, args, "interp")
+    return dispatch_program(program, args, "run")

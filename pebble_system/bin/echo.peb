@@ -1,0 +1,9 @@
+import system.lib.cli
+
+args = []
+i = 0
+while i < ARGC:
+    append(args, argv(i))
+    i = i + 1
+
+print system.lib.cli.join_args(args)

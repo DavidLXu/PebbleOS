@@ -1,0 +1,16 @@
+import system.lib.cli
+
+if ARGC > 1:
+    print "head accepts zero or one file name"
+else:
+    text = ""
+    if ARGC == 0:
+        text = system.lib.cli.stdin_text()
+    else:
+        name = argv(0)
+        if not file_exists(name):
+            print "file '" + name + "' does not exist"
+            text = ""
+        else:
+            text = read_file(name)
+    system.lib.cli.print_first_lines(text, 10)

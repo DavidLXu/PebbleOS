@@ -1113,6 +1113,24 @@ def runtime_process_context():
 def runtime_syscall_table():
     return system.kernel.syscall.syscall_table()
 
+def sys_fd_open(path, mode):
+    return fd_open(path, mode)
+
+def sys_fd_read(fd):
+    return fd_read(fd)
+
+def sys_fd_write(fd, text):
+    return fd_write(fd, text)
+
+def sys_fd_close(fd):
+    return fd_close(fd)
+
+def sys_fd_stat(fd):
+    return fd_stat(fd)
+
+def sys_fd_readdir(fd):
+    return fd_readdir(fd)
+
 def chdir(name):
     target = normalize_path(name)
     storage = storage_name(target)

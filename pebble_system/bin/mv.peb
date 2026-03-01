@@ -1,0 +1,13 @@
+if ARGC != 2:
+    print "mv requires a source and destination"
+else:
+    src = argv(0)
+    dst = argv(1)
+    if not file_exists(src):
+        print "file '" + src + "' does not exist"
+    elif src == dst:
+        print "source and destination are the same"
+    else:
+        write_file(dst, read_file(src))
+        delete_file(src)
+        print "moved " + src + " to " + dst

@@ -1,0 +1,7 @@
+if ARGC != 0:
+    print "this command does not take arguments"
+elif active_fs_mode() != "mfs" and active_fs_mode() != "mfs-import":
+    print "sync is only available in mfs and mfs-import"
+else:
+    sync_filesystem()
+    print "synced memory filesystem to .__pebble_vfs__.db"

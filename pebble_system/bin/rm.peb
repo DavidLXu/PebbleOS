@@ -1,0 +1,6 @@
+if ARGC != 1:
+    print "a file name is required"
+else:
+    name = argv(0)
+    delete_file(name)
+    print "deleted " + name

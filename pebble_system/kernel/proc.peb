@@ -35,6 +35,9 @@ def process_wait_child(ppid):
 def process_reap(pid):
     return reap_process(pid)
 
+def process_kill(pid):
+    return kill_process(pid)
+
 def process_children(ppid):
     return list_child_processes(ppid)
 

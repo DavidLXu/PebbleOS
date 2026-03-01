@@ -1,0 +1,109 @@
+def stdin_text():
+    text = ""
+    first = 1
+    while 1:
+        line = input("")
+        if line == "":
+            return text
+        if first == 0:
+            text = text + "\n"
+        text = text + line
+        first = 0
+
+def join_args(args):
+    out = ""
+    i = 0
+    while i < len(args):
+        if i > 0:
+            out = out + " "
+        out = out + args[i]
+        i = i + 1
+    return out
+
+def count_lines(text):
+    count = 0
+    i = 0
+    while i < len(text):
+        if text[i] == "\n":
+            count = count + 1
+        i = i + 1
+    if count == 0 and len(text) > 0:
+        return 1
+    return count
+
+def count_words(text):
+    count = 0
+    in_word = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == " " or ch == "\n" or ch == "\t" or ch == "\r":
+            in_word = 0
+        else:
+            if in_word == 0:
+                count = count + 1
+                in_word = 1
+        i = i + 1
+    return count
+
+def print_wc_triplet(lines, words, bytes, label):
+    out = str(lines) + " " + str(words) + " " + str(bytes)
+    if label != "":
+        out = out + " " + label
+    print out
+    return 0
+
+def split_lines(text):
+    lines = []
+    current = ""
+    i = 0
+    while i < len(text):
+        if text[i] == "\n":
+            append(lines, current)
+            current = ""
+        else:
+            current = current + text[i]
+        i = i + 1
+    if len(text) > 0 and text[len(text) - 1] == "\n":
+        return lines
+    append(lines, current)
+    return lines
+
+def print_first_lines(text, limit):
+    lines = split_lines(text)
+    i = 0
+    while i < len(lines) and i < limit:
+        print lines[i]
+        i = i + 1
+    return 0
+
+def print_last_lines(text, limit):
+    lines = split_lines(text)
+    start = len(lines) - limit
+    if start < 0:
+        start = 0
+    i = start
+    while i < len(lines):
+        print lines[i]
+        i = i + 1
+    return 0
+
+def contains_text(text, pattern):
+    if pattern == "":
+        return 1
+    if len(pattern) > len(text):
+        return 0
+    i = 0
+    while i + len(pattern) <= len(text):
+        if slice_equals(text, pattern, i):
+            return 1
+        i = i + 1
+    return 0
+
+def slice_equals(text, pattern, start):
+    i = 0
+    while i < len(pattern):
+        if text[start + i] != pattern[i]:
+            return 0
+        i = i + 1
+    return 1

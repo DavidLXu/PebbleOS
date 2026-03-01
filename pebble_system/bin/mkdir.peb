@@ -1,0 +1,4 @@
+if ARGC != 1:
+    print "mkdir requires exactly one path"
+else:
+    make_directory(argv(0))

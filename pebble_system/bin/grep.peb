@@ -1,0 +1,27 @@
+import system.lib.cli
+
+def grep_text(text, pattern, label):
+    lines = system.lib.cli.split_lines(text)
+    i = 0
+    while i < len(lines):
+        if system.lib.cli.contains_text(lines[i], pattern):
+            if label == "":
+                print lines[i]
+            else:
+                print label + ":" + lines[i]
+        i = i + 1
+
+if ARGC == 0:
+    print "grep requires a pattern"
+elif ARGC == 1:
+    grep_text(system.lib.cli.stdin_text(), argv(0), "")
+else:
+    pattern = argv(0)
+    i = 1
+    while i < ARGC:
+        name = argv(i)
+        if not file_exists(name):
+            print "file '" + name + "' does not exist"
+        else:
+            grep_text(read_file(name), pattern, name)
+        i = i + 1

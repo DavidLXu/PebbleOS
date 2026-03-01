@@ -1,0 +1,10 @@
+if ARGC != 1:
+    print "rmdir requires exactly one path"
+else:
+    name = argv(0)
+    if not directory_exists(name):
+        print "directory '" + name + "' does not exist"
+    elif not directory_empty(name):
+        print "notice: directory '" + name + "' is not empty"
+    else:
+        remove_directory(name)

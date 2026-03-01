@@ -1,0 +1,14 @@
+import system.lib.path
+
+if ARGC == 0:
+    print "which requires at least one command name"
+else:
+    path_value = system.lib.path.env_value(ENV, "PATH", "/system/bin:/system/sbin:/bin")
+    i = 0
+    while i < ARGC:
+        found = system.lib.path.find_command_path(argv(i), path_value)
+        if found == "":
+            print "not found: " + argv(i)
+        else:
+            print "/" + found
+        i = i + 1

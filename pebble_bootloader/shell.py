@@ -89,6 +89,8 @@ class PebbleShell(cmd.Cmd):
         self.fs = FlatFileSystem(root)
         self.fs_mode = fs_mode
         self.cwd = "/"
+        self.env: dict[str, str] = {"PATH": "/system/bin:/system/sbin:/bin"}
+        self._runtime_env_override: dict[str, str] | None = None
         self.mfs_blob: str | None = None
         self._jobs: dict[int, BackgroundJob] = {}
         self._jobs_lock = threading.Lock()
@@ -100,11 +102,24 @@ class PebbleShell(cmd.Cmd):
         self._pending_signal_events: list[dict[str, object]] = []
         self._signal_notified_pids: set[int] = set()
         self._foreground_pgid: int | None = None
+        self._redirect_output_target: Path | None = None
+        self._redirect_output_mode: str = "w"
+        self._redirect_error_target: Path | None = None
+        self._redirect_error_mode: str = "w"
+        self._redirect_error_to_stdout: bool = False
+        self._active_stdin_fd: int | None = None
+        self._active_stdout_fd: int | None = None
+        self._active_stderr_fd: int | None = None
+        self._fd_table: dict[int, dict[str, object]] = {}
+        self._next_fd = 3
         self._detach_requested = threading.Event()
         self._main_thread_id = threading.get_ident()
         self._terminal_owner_thread_id: int | None = None
         self._shell_terminal_settings = self._capture_terminal_settings()
         self.fs.mount("system", Path(__file__).resolve().parent.parent / "pebble_system")
+        self._ensure_phase4_layout()
+        self._refresh_shell_state()
+        self._load_shell_profile()
         self._refresh_shell_state()
         self._vm_scheduler = threading.Thread(target=self._vm_scheduler_loop, name="pebble-vm-scheduler", daemon=True)
         self._vm_scheduler.start()
@@ -170,6 +185,8 @@ class PebbleShell(cmd.Cmd):
             "help",
             "ls",
             "cd",
+            "export",
+            "set",
             "pwd",
             "mkdir",
             "rmdir",
@@ -188,7 +205,9 @@ class PebbleShell(cmd.Cmd):
             "ps",
             "jobs",
             "fg",
+            "bg",
             "nano",
+            "source",
             "lang",
             "exit",
         ]
@@ -200,7 +219,7 @@ class PebbleShell(cmd.Cmd):
             return self._complete_paths(text, directories_only=True, fuzzy=(command == "cd"))
         if command == "ls":
             return self._complete_paths(text, directories_only=False, fuzzy=True)
-        if command in {"touch", "edit", "cat", "rm", "run", "runbg", "exec", "execbg", "nano"}:
+        if command in {"touch", "edit", "cat", "rm", "run", "runbg", "exec", "execbg", "nano", "source"}:
             return self._complete_paths(
                 text,
                 directories_only=False,
@@ -210,6 +229,8 @@ class PebbleShell(cmd.Cmd):
         if command in {"cp", "mv"}:
             return self._complete_paths(text, directories_only=(arg_index > 0), fuzzy=False)
         if command == "fg":
+            return self._complete_job_ids(text)
+        if command == "bg":
             return self._complete_job_ids(text)
         if command == "help":
             return self.completenames(text)
@@ -226,14 +247,127 @@ class PebbleShell(cmd.Cmd):
         text = line.strip()
         if not text:
             return None
-        parts = text.split(None, 1)
-        command = parts[0]
-        arg = ""
-        if len(parts) > 1:
-            arg = parts[1]
-        if self._dispatch_runtime_command(command, arg):
+        parts = self._split_args(text)
+        background = 0
+        if parts and parts[len(parts) - 1] == "&":
+            background = 1
+            parts = parts[:-1]
+        assignments, argv = self._split_assignment_prefix(parts)
+        if not argv:
+            if assignments:
+                for name, value in assignments.items():
+                    self.env[name] = value
+            return None
+        env_override = assignments or {}
+        if background:
+            env_override["PEBBLE_SHELL_BG"] = "1"
+        if self._dispatch_runtime_command(argv[0], argv[1:], env_override=env_override or None):
             return True
         return None
+
+    def onecmd(self, line: str) -> bool | None:
+        pipeline = self._parse_pipeline(line)
+        if pipeline is not None:
+            previous_stdin_fd = self._active_stdin_fd
+            previous_stdout_fd = self._active_stdout_fd
+            previous_stderr_fd = self._active_stderr_fd
+            created_fds: list[int] = []
+            try:
+                stop: bool | None = None
+                index = 0
+                current_input_fd = previous_stdin_fd
+                while index < len(pipeline):
+                    write_fd: int | None = None
+                    next_input_fd: int | None = None
+                    if index + 1 < len(pipeline):
+                        read_fd, write_fd = self._create_pipe_fds()
+                        created_fds.append(read_fd)
+                        created_fds.append(write_fd)
+                        next_input_fd = read_fd
+                    self._active_stdin_fd = current_input_fd
+                    self._active_stdout_fd = write_fd if write_fd is not None else previous_stdout_fd
+                    self._active_stderr_fd = previous_stderr_fd
+                    stop = super().onecmd(pipeline[index])
+                    if write_fd is not None:
+                        self._close_fd_record(write_fd)
+                    current_input_fd = next_input_fd
+                    index = index + 1
+                return stop
+            finally:
+                self._active_stdin_fd = previous_stdin_fd
+                self._active_stdout_fd = previous_stdout_fd
+                self._active_stderr_fd = previous_stderr_fd
+                i = 0
+                while i < len(created_fds):
+                    self._close_fd_record(created_fds[i])
+                    i = i + 1
+        redirected = self._parse_redirections(line)
+        if redirected is None:
+            try:
+                return super().onecmd(line)
+            except ValueError as exc:
+                self._emit_runtime_error_output(str(exc))
+                return None
+        cleaned_line, stdin_path, stdout_path, stdout_mode, stderr_path, stderr_mode, stderr_to_stdout = redirected
+        previous_output_target = self._redirect_output_target
+        previous_output_mode = self._redirect_output_mode
+        previous_error_target = self._redirect_error_target
+        previous_error_mode = self._redirect_error_mode
+        previous_error_to_stdout = self._redirect_error_to_stdout
+        previous_stdin_fd = self._active_stdin_fd
+        previous_stdout_fd = self._active_stdout_fd
+        previous_stderr_fd = self._active_stderr_fd
+        opened_fds: list[int] = []
+        try:
+            self._redirect_output_target = None if stdout_path is None else self._logical_path_to_host(
+                self._normalize_user_path(stdout_path)
+            )
+            self._redirect_output_mode = stdout_mode
+            self._redirect_error_target = None if stderr_path is None else self._logical_path_to_host(
+                self._normalize_user_path(stderr_path)
+            )
+            self._redirect_error_mode = stderr_mode
+            self._redirect_error_to_stdout = stderr_to_stdout
+            self._active_stdin_fd = None
+            self._active_stdout_fd = None
+            self._active_stderr_fd = None
+            if stdout_path is not None:
+                stdout_fd = self._open_fd_record(self._normalize_user_path(stdout_path), stdout_mode)
+                opened_fds.append(stdout_fd)
+                self._active_stdout_fd = stdout_fd
+            if stderr_to_stdout:
+                self._active_stderr_fd = self._active_stdout_fd
+            elif stderr_path is not None:
+                stderr_fd = self._open_fd_record(self._normalize_user_path(stderr_path), stderr_mode)
+                opened_fds.append(stderr_fd)
+                self._active_stderr_fd = stderr_fd
+            if stdin_path is not None:
+                stdin_fd = self._open_fd_record(self._normalize_user_path(stdin_path), "r")
+                opened_fds.append(stdin_fd)
+                self._active_stdin_fd = stdin_fd
+            return super().onecmd(cleaned_line)
+        except FileNotFoundError as exc:
+            self._emit_runtime_error_output(str(exc))
+            return None
+        except FileSystemError as exc:
+            self._emit_runtime_error_output(str(exc))
+            return None
+        except ValueError as exc:
+            self._emit_runtime_error_output(str(exc))
+            return None
+        finally:
+            self._redirect_output_target = previous_output_target
+            self._redirect_output_mode = previous_output_mode
+            self._redirect_error_target = previous_error_target
+            self._redirect_error_mode = previous_error_mode
+            self._redirect_error_to_stdout = previous_error_to_stdout
+            self._active_stdin_fd = previous_stdin_fd
+            self._active_stdout_fd = previous_stdout_fd
+            self._active_stderr_fd = previous_stderr_fd
+            i = 0
+            while i < len(opened_fds):
+                self._close_fd_record(opened_fds[i])
+                i = i + 1
 
     def _completion_context(self, line: str, begidx: int) -> tuple[str, int]:
         prefix = line[:begidx]
@@ -277,6 +411,8 @@ class PebbleShell(cmd.Cmd):
         for child in sorted(directory_host.iterdir(), key=lambda item: item.name):
             if directories_only and not child.is_dir():
                 continue
+            if recursive_fuzzy and not child.is_dir() and child.suffix != ".peb":
+                continue
             if dir_text:
                 suggestion = dir_text.rstrip("/") + "/" + child.name
             elif absolute:
@@ -296,6 +432,8 @@ class PebbleShell(cmd.Cmd):
 
         recursive_matches: list[str] = []
         for suggestion in self._visible_path_suggestions(directories_only):
+            if recursive_fuzzy and not suggestion.endswith(".peb"):
+                continue
             folded = suggestion.lower().rstrip("/")
             if partial_folded in folded and suggestion not in recursive_matches:
                 recursive_matches.append(suggestion)
@@ -349,19 +487,26 @@ class PebbleShell(cmd.Cmd):
         if isinstance(intro, str) and intro:
             self.intro = intro
 
-    def _dispatch_runtime_command(self, command: str, arg: str) -> bool:
+    def _dispatch_runtime_command(
+        self, command: str, arg: str | list[str], env_override: dict[str, str] | None = None
+    ) -> bool:
         try:
-            argv = self._split_args(arg)
-            result = self._system_shell_call("shell_dispatch", [command, argv], consume_output=True)
+            argv = self._split_args(arg) if isinstance(arg, str) else list(arg)
+            result = self._system_shell_call(
+                "shell_dispatch",
+                [command, argv],
+                consume_output=True,
+                env_override=env_override,
+            )
             if isinstance(result, str) and result.startswith("__cwd__:"):
                 self.cwd = result[8:]
                 return False
             return result == "__exit__"
         except KeyboardInterrupt:
-            print("^C")
+            self._emit_runtime_error_output("^C")
             return False
         except (FileSystemError, PebbleError, ValueError) as exc:
-            print(exc)
+            self._emit_runtime_error_output(str(exc))
             return False
 
     def _system_shell_call(
@@ -369,17 +514,23 @@ class PebbleShell(cmd.Cmd):
         function_name: str,
         args: list[object] | None = None,
         consume_output: bool = False,
+        env_override: dict[str, str] | None = None,
     ) -> object:
         runtime_source = self.fs.read_file("system/runtime.peb")
         shell_source = self.fs.read_file("system/shell.peb")
         source = runtime_source + "\n" + shell_source
         runtime = self._make_runtime(consume_output=consume_output)
+        env_map = dict(self.env)
+        if env_override:
+            env_map.update(env_override)
         initial_globals: dict[str, object] = {
             "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
             "SYSTEM_SHELL_PATH": "system/shell.peb",
             "SYSTEM_SHELL_SOURCE": shell_source,
             "FS_MODE": self.fs_mode,
             "CWD": self.cwd,
+            "ENV": env_map,
+            "PATH": env_map.get("PATH", ""),
         }
         call_parts: list[str] = []
         if args:
@@ -388,7 +539,19 @@ class PebbleShell(cmd.Cmd):
                 initial_globals[name] = value
                 call_parts.append(name)
         call_expr = f"{function_name}(" + ", ".join(call_parts) + ")"
-        runtime.execute(source + f"\n__result = {call_expr}\n", initial_globals=initial_globals)
+        previous_runtime_env = self._runtime_env_override
+        self._runtime_env_override = env_map
+        try:
+            runtime.execute(source + f"\n__result = {call_expr}\n", initial_globals=initial_globals)
+        finally:
+            self._runtime_env_override = previous_runtime_env
+        if env_override is None:
+            updated_env = runtime.globals.get("ENV")
+            if isinstance(updated_env, dict):
+                merged = dict(self.env)
+                for name, value in updated_env.items():
+                    merged[str(name)] = str(value)
+                self.env = merged
         return runtime.globals.get("__result")
 
     def _make_runtime(self, consume_output: bool) -> PebbleInterpreter:
@@ -397,7 +560,7 @@ class PebbleShell(cmd.Cmd):
             consumer = self._emit_runtime_output
         return PebbleInterpreter(
             self.fs.root,
-            input_provider=input,
+            input_provider=self._runtime_input,
             output_consumer=consumer,
             path_resolver=self._resolve_user_path_to_host,
             host_functions={
@@ -438,6 +601,15 @@ class PebbleShell(cmd.Cmd):
                 "wait_process": self._host_wait_process,
                 "wait_child_process": self._host_wait_child_process,
                 "reap_process": self._host_reap_process,
+                "kill_process": self._host_kill_process,
+                "background_job": self._host_background_job,
+                "source_shell_script": self._host_source_shell_script,
+                "fd_open": self._host_fd_open,
+                "fd_read": self._host_fd_read,
+                "fd_write": self._host_fd_write,
+                "fd_close": self._host_fd_close,
+                "fd_stat": self._host_fd_stat,
+                "fd_readdir": self._host_fd_readdir,
                 "vm_create_task": self._host_vm_create_task,
                 "vm_step_task": self._host_vm_step_task,
                 "vm_task_status": self._host_vm_task_status,
@@ -465,13 +637,140 @@ class PebbleShell(cmd.Cmd):
             },
         )
 
+    def _runtime_input(self, prompt: str = "") -> str:
+        if self._active_stdin_fd is not None:
+            return self._fd_readline(self._active_stdin_fd)
+        return input(prompt)
+
+    def _open_fd_record(self, logical_path: str, mode: str) -> int:
+        path = self._logical_path_to_host(logical_path)
+        if mode not in {"r", "w", "a"}:
+            raise FileSystemError(f"unsupported fd mode '{mode}'")
+        if mode == "r" and not path.exists():
+            raise FileNotFoundError(f"[Errno 2] No such file or directory: '{logical_path}'")
+        if mode in {"w", "a"}:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        fd = self._next_fd
+        self._next_fd = self._next_fd + 1
+        record: dict[str, object] = {"kind": "file", "path": path, "mode": mode, "cursor": 0}
+        self._fd_table[fd] = record
+        if mode == "w":
+            path.write_text("", encoding="utf-8")
+        return fd
+
+    def _create_pipe_fds(self) -> tuple[int, int]:
+        shared: dict[str, object] = {"kind": "pipe", "buffer": [], "read_cursor": 0, "write_closed": False}
+        read_fd = self._next_fd
+        self._next_fd = self._next_fd + 1
+        write_fd = self._next_fd
+        self._next_fd = self._next_fd + 1
+        self._fd_table[read_fd] = {"kind": "pipe", "mode": "r", "pipe": shared}
+        self._fd_table[write_fd] = {"kind": "pipe", "mode": "w", "pipe": shared}
+        return read_fd, write_fd
+
+    def _close_fd_record(self, fd: int) -> None:
+        record = self._fd_table.pop(fd, None)
+        if record is None:
+            return
+        if record.get("kind") == "pipe" and record.get("mode") == "w":
+            pipe = record.get("pipe")
+            if isinstance(pipe, dict):
+                pipe["write_closed"] = True
+
+    def _fd_readline(self, fd: int) -> str:
+        record = self._fd_table.get(fd)
+        if record is None:
+            return ""
+        kind = record.get("kind")
+        if kind == "pipe":
+            pipe = record.get("pipe")
+            if not isinstance(pipe, dict):
+                return ""
+            buffer = pipe.get("buffer")
+            cursor = pipe.get("read_cursor")
+            if not isinstance(buffer, list) or not isinstance(cursor, int):
+                return ""
+            if cursor >= len(buffer):
+                return ""
+            pipe["read_cursor"] = cursor + 1
+            return str(buffer[cursor])
+        path = record.get("path")
+        cursor = record.get("cursor")
+        if not isinstance(path, Path) or not isinstance(cursor, int):
+            return ""
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if cursor >= len(lines):
+            return ""
+        record["cursor"] = cursor + 1
+        return lines[cursor]
+
+    def _write_fd_text(self, fd: int, text: str) -> None:
+        record = self._fd_table.get(fd)
+        if record is None:
+            return
+        kind = record.get("kind")
+        if kind == "pipe":
+            pipe = record.get("pipe")
+            if not isinstance(pipe, dict):
+                return
+            buffer = pipe.get("buffer")
+            if not isinstance(buffer, list):
+                return
+            lines = text.splitlines()
+            i = 0
+            while i < len(lines):
+                buffer.append(lines[i])
+                i = i + 1
+            return
+        path = record.get("path")
+        mode = record.get("mode")
+        if not isinstance(path, Path) or not isinstance(mode, str):
+            return
+        existing = ""
+        if mode == "a" and path.exists():
+            existing = path.read_text(encoding="utf-8")
+        if mode == "a":
+            path.write_text(existing + text, encoding="utf-8")
+        else:
+            current = ""
+            if path.exists():
+                current = path.read_text(encoding="utf-8")
+            path.write_text(current + text, encoding="utf-8")
+
     def _split_args(self, arg: str) -> list[str]:
         if not arg.strip():
             return []
         try:
-            return shlex.split(arg)
+            return self._shell_split(arg)
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
+
+    def _split_assignment_prefix(self, parts: list[str]) -> tuple[dict[str, str], list[str]]:
+        assignments: dict[str, str] = {}
+        index = 0
+        while index < len(parts):
+            token = parts[index]
+            if "=" not in token:
+                break
+            name, value = token.split("=", 1)
+            if not self._is_assignment_name(name):
+                break
+            assignments[name] = value
+            index = index + 1
+        return assignments, parts[index:]
+
+    def _is_assignment_name(self, name: str) -> bool:
+        if not name:
+            return False
+        if not (name[0].isalpha() or name[0] == "_"):
+            return False
+        i = 1
+        while i < len(name):
+            ch = name[i]
+            if not (ch.isalnum() or ch == "_"):
+                return False
+            i = i + 1
+        return True
 
     def _host_list_files(self, args: list[object], line_number: int) -> list[str]:
         if args:
@@ -814,6 +1113,105 @@ class PebbleShell(cmd.Cmd):
         except (FileSystemError, PebbleError) as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
 
+    def _host_kill_process(self, args: list[object], line_number: int) -> dict[str, object]:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: kill_process() expects 1 integer argument")
+        try:
+            return self._kill_process(args[0])
+        except (FileSystemError, PebbleError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+
+    def _host_background_job(self, args: list[object], line_number: int) -> list[str]:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: background_job() expects 1 integer argument")
+        try:
+            return self._background_job(args[0])
+        except (FileSystemError, PebbleError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+
+    def _host_source_shell_script(self, args: list[object], line_number: int) -> int:
+        if len(args) != 1 or not isinstance(args[0], str):
+            raise PebbleError(f"line {line_number}: source_shell_script() expects 1 string argument")
+        try:
+            self._source_shell_file(args[0])
+        except (FileSystemError, PebbleError, ValueError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+        return 0
+
+    def _host_fd_open(self, args: list[object], line_number: int) -> int:
+        if len(args) != 2 or not isinstance(args[0], str) or not isinstance(args[1], str):
+            raise PebbleError(f"line {line_number}: fd_open() expects path and mode strings")
+        try:
+            return self._open_fd_record(self._normalize_user_path(args[0]), args[1])
+        except (FileNotFoundError, FileSystemError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+
+    def _host_fd_read(self, args: list[object], line_number: int) -> str:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: fd_read() expects an integer fd")
+        record = self._fd_table.get(args[0])
+        if record is None:
+            raise PebbleError(f"line {line_number}: fd {args[0]} is not open")
+        if record.get("kind") == "pipe":
+            pipe = record.get("pipe")
+            if not isinstance(pipe, dict):
+                return ""
+            buffer = pipe.get("buffer")
+            if not isinstance(buffer, list):
+                return ""
+            return "\n".join(str(item) for item in buffer)
+        path = record.get("path")
+        if not isinstance(path, Path):
+            raise PebbleError(f"line {line_number}: fd {args[0]} is not readable")
+        return path.read_text(encoding="utf-8")
+
+    def _host_fd_write(self, args: list[object], line_number: int) -> int:
+        if len(args) != 2 or not isinstance(args[0], int) or not isinstance(args[1], str):
+            raise PebbleError(f"line {line_number}: fd_write() expects fd and text")
+        record = self._fd_table.get(args[0])
+        if record is None:
+            raise PebbleError(f"line {line_number}: fd {args[0]} is not open")
+        self._write_fd_text(args[0], args[1])
+        return len(args[1])
+
+    def _host_fd_close(self, args: list[object], line_number: int) -> int:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: fd_close() expects an integer fd")
+        if args[0] not in self._fd_table:
+            raise PebbleError(f"line {line_number}: fd {args[0]} is not open")
+        self._close_fd_record(args[0])
+        return 0
+
+    def _host_fd_stat(self, args: list[object], line_number: int) -> dict[str, object]:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: fd_stat() expects an integer fd")
+        record = self._fd_table.get(args[0])
+        if record is None:
+            raise PebbleError(f"line {line_number}: fd {args[0]} is not open")
+        if record.get("kind") == "pipe":
+            pipe = record.get("pipe")
+            size = 0
+            if isinstance(pipe, dict):
+                buffer = pipe.get("buffer")
+                if isinstance(buffer, list):
+                    size = len(buffer)
+            return {"size": size, "path": "<pipe>", "mode": record["mode"], "kind": "pipe"}
+        path = record.get("path")
+        if not isinstance(path, Path):
+            raise PebbleError(f"line {line_number}: fd {args[0]} is not stat-able")
+        return {"size": path.stat().st_size, "path": str(path), "mode": record["mode"], "kind": "file"}
+
+    def _host_fd_readdir(self, args: list[object], line_number: int) -> list[str]:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: fd_readdir() expects an integer fd")
+        record = self._fd_table.get(args[0])
+        if record is None:
+            raise PebbleError(f"line {line_number}: fd {args[0]} is not open")
+        path = Path(record["path"])
+        if not path.is_dir():
+            raise PebbleError(f"line {line_number}: fd {args[0]} is not a directory")
+        return sorted(child.name for child in path.iterdir())
+
     def _host_vm_create_task(self, args: list[object], line_number: int) -> int:
         if len(args) != 2:
             raise PebbleError(f"line {line_number}: vm_create_task() expected 2 arguments but got {len(args)}")
@@ -838,6 +1236,8 @@ class PebbleShell(cmd.Cmd):
             "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
             "FS_MODE": self.fs_mode,
             "CWD": self.cwd,
+            "ENV": dict(self._runtime_env_override or self.env),
+            "PATH": str((self._runtime_env_override or self.env).get("PATH", "")),
         }
         try:
             interpreter.prepare(args[0], initial_globals=initial_globals)
@@ -1157,9 +1557,34 @@ class PebbleShell(cmd.Cmd):
             return
 
     def _emit_runtime_output(self, text: str) -> None:
+        if self._active_stdout_fd is not None:
+            self._write_fd_text(self._active_stdout_fd, text + "\n")
+            return
+        if self._redirect_output_target is not None:
+            existing = ""
+            if self._redirect_output_mode == "a" and self._redirect_output_target.exists():
+                existing = self._redirect_output_target.read_text(encoding="utf-8")
+            payload = text + "\n"
+            self._redirect_output_target.write_text(existing + payload, encoding="utf-8")
+            return
         if sys.stdout.isatty():
             sys.stdout.write(text + "\r\n")
             sys.stdout.flush()
+            return
+        print(text, flush=True)
+
+    def _emit_runtime_error_output(self, text: str) -> None:
+        if self._active_stderr_fd is not None:
+            self._write_fd_text(self._active_stderr_fd, text + "\n")
+            return
+        if self._redirect_error_to_stdout:
+            self._emit_runtime_output(text)
+            return
+        if self._redirect_error_target is not None:
+            existing = ""
+            if self._redirect_error_mode == "a" and self._redirect_error_target.exists():
+                existing = self._redirect_error_target.read_text(encoding="utf-8")
+            self._redirect_error_target.write_text(existing + text + "\n", encoding="utf-8")
             return
         print(text, flush=True)
 
@@ -1209,6 +1634,8 @@ class PebbleShell(cmd.Cmd):
             "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
             "FS_MODE": self.fs_mode,
             "CWD": cwd_value,
+            "ENV": dict(self._runtime_env_override or self.env),
+            "PATH": str((self._runtime_env_override or self.env).get("PATH", "")),
         }
         interpreter.prepare(source, initial_globals=initial_globals)
         with self._vm_lock:
@@ -1305,7 +1732,7 @@ class PebbleShell(cmd.Cmd):
             task.outputs_consumed = task.outputs_consumed + 1
 
     def _run_program(self, name: str, extra_args: list[str], exec_mode: str = "interp", cwd: str | None = None) -> None:
-        if name in {"nano.peb", "system/nano.peb"} or not sys.stdin.isatty():
+        if name in {"nano.peb", "system/nano.peb", "bash.peb", "system/bin/bash.peb"} or not sys.stdin.isatty():
             _, output, error = self._execute_program(name, extra_args, exec_mode=exec_mode, cwd=cwd)
             if error is not None:
                 if error == "__interrupt__":
@@ -1358,8 +1785,10 @@ class PebbleShell(cmd.Cmd):
             "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
             "FS_MODE": self.fs_mode,
             "CWD": cwd_value,
+            "ENV": dict(self._runtime_env_override or self.env),
+            "PATH": str((self._runtime_env_override or self.env).get("PATH", "")),
         }
-        provider = input if input_provider is None else input_provider
+        provider = self._runtime_input if input_provider is None else input_provider
         if exec_mode == "bytecode":
             interpreter = PebbleBytecodeInterpreter(
                 self.fs.root,
@@ -1376,7 +1805,7 @@ class PebbleShell(cmd.Cmd):
                 path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, cwd_value)),
                 host_functions=self._make_runtime(consume_output=False).host_functions,
             )
-        interactive_program = name in {"nano.peb", "system/nano.peb"}
+        interactive_program = name in {"nano.peb", "system/nano.peb", "bash.peb", "system/bin/bash.peb"}
         if interactive_program and extra_args:
             target_file = extra_args[0]
             self._logical_path_to_host(self._normalize_user_path(target_file, cwd_value))
@@ -1435,6 +1864,9 @@ class PebbleShell(cmd.Cmd):
                     ),
                 )
                 with self._jobs_lock:
+                    if job.status == "terminated":
+                        self._notify_sigchld_for_job(job)
+                        return
                     if error is None:
                         job.status = "done"
                     elif error == "__interrupt__":
@@ -1713,6 +2145,22 @@ class PebbleShell(cmd.Cmd):
     def _reap_process(self, pid: int) -> dict[str, object]:
         return self._wait_process(pid)
 
+    def _kill_process(self, pid: int) -> dict[str, object]:
+        with self._vm_lock:
+            vm_task = self._vm_tasks.get(pid)
+            if vm_task is not None:
+                self._emit_signal_event("SIGTERM", vm_task.task_id, vm_task.pgid, "vm", "terminated")
+                self._vm_tasks.pop(pid, None)
+                return {"pid": pid, "state": "terminated", "kind": "vm", "exit_status": 143}
+        with self._jobs_lock:
+            job = self._jobs.get(pid)
+            if job is None:
+                raise PebbleError(f"process {pid} does not exist")
+            job.status = "terminated"
+            job.error = "terminated by SIGTERM"
+            self._emit_signal_event("SIGTERM", job.job_id, job.pgid, "host-job", "terminated")
+            return {"pid": pid, "state": "terminated", "kind": "host-job", "exit_status": 143}
+
     def _wait_child_process(self, parent_pid: int) -> dict[str, object]:
         saw_child = 0
         while True:
@@ -1756,6 +2204,48 @@ class PebbleShell(cmd.Cmd):
             lines.append("(no output)")
         lines.append(f"[{job.job_id}] {job.status}")
         return lines
+
+    def _background_job(self, job_id: int) -> list[str]:
+        with self._vm_lock:
+            task = self._vm_tasks.get(job_id)
+            if task is not None:
+                task.attached = False
+                return [f"[{job_id}] {task.program}"]
+        with self._jobs_lock:
+            job = self._jobs.get(job_id)
+            if job is not None:
+                return [f"[{job_id}] {job.program}"]
+        raise PebbleError(f"job {job_id} does not exist")
+
+    def _ensure_phase4_layout(self) -> None:
+        defaults = {
+            "etc/profile": "# Pebble OS login profile\nexport PATH=/system/bin:/system/sbin:/bin\n",
+            "etc/passwd": "root:x:0:0:root:/root:/bin/sh\n",
+            "etc/group": "root:x:0:\n",
+            "etc/fstab": "# device mountpoint fstype options\n",
+        }
+        for name, content in defaults.items():
+            path = self.fs.resolve_path(name)
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+
+    def _load_shell_profile(self) -> None:
+        try:
+            self._source_shell_file("/etc/profile")
+        except (FileSystemError, PebbleError, ValueError):
+            return
+
+    def _source_shell_file(self, name: str) -> None:
+        logical = self._normalize_user_path(name)
+        path = self._logical_path_to_host(logical)
+        if not path.exists():
+            raise FileSystemError(f"file '{logical}' does not exist")
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            self.onecmd(line)
 
     def _require_string_arg(
         self,
@@ -1849,12 +2339,134 @@ class PebbleShell(cmd.Cmd):
             raise FileSystemError("file path escapes the Pebble OS root") from exc
         return path
 
-    def onecmd(self, line: str) -> bool | None:
+    def _parse_redirections(
+        self, line: str
+    ) -> tuple[str, str | None, str | None, str, str | None, str, bool] | None:
         try:
-            return super().onecmd(line)
-        except ValueError as exc:
-            print(exc)
+            parts = self._shell_split(line)
+        except ValueError:
             return None
+        if ">" not in parts and ">>" not in parts and "<" not in parts and "2>" not in parts and "2>&1" not in parts:
+            return None
+        cleaned: list[str] = []
+        stdin_path: str | None = None
+        stdout_path: str | None = None
+        stdout_mode = "w"
+        stderr_path: str | None = None
+        stderr_mode = "w"
+        stderr_to_stdout = False
+        i = 0
+        while i < len(parts):
+            token = parts[i]
+            if token == "2>&1":
+                stderr_to_stdout = True
+                i = i + 1
+                continue
+            if token in {">", ">>", "<", "2>"}:
+                if i + 1 >= len(parts):
+                    raise ValueError(f"missing redirection target for {token}")
+                target = parts[i + 1]
+                if token == "<":
+                    stdin_path = target
+                elif token == "2>":
+                    stderr_path = target
+                    stderr_mode = "w"
+                else:
+                    stdout_path = target
+                    stdout_mode = "a" if token == ">>" else "w"
+                i = i + 2
+                continue
+            cleaned.append(token)
+            i = i + 1
+        return " ".join(cleaned), stdin_path, stdout_path, stdout_mode, stderr_path, stderr_mode, stderr_to_stdout
+
+    def _parse_pipeline(self, line: str) -> list[str] | None:
+        try:
+            parts = self._shell_split(line)
+        except ValueError:
+            return None
+        if "|" not in parts:
+            return None
+        segments: list[str] = []
+        current: list[str] = []
+        i = 0
+        while i < len(parts):
+            if parts[i] == "|":
+                segment = " ".join(current).strip()
+                if not segment:
+                    raise ValueError("pipe requires commands on both sides")
+                segments.append(segment)
+                current = []
+            else:
+                current.append(parts[i])
+            i = i + 1
+        tail = " ".join(current).strip()
+        if not tail:
+            raise ValueError("pipe requires commands on both sides")
+        segments.append(tail)
+        return segments
+
+    def _shell_split(self, line: str) -> list[str]:
+        lexer = shlex.shlex(line, posix=True, punctuation_chars="|<>&")
+        lexer.whitespace_split = True
+        raw = list(lexer)
+        tokens: list[str] = []
+        i = 0
+        while i < len(raw):
+            token = raw[i]
+            if token == ">>":
+                tokens.append(">>")
+                i = i + 1
+                continue
+            if token == "2" and i + 1 < len(raw) and raw[i + 1] == ">":
+                if i + 2 < len(raw) and raw[i + 2] == "&1":
+                    tokens.append("2>&1")
+                    i = i + 3
+                    continue
+                tokens.append("2>")
+                i = i + 2
+                continue
+            if token == "2" and i + 2 < len(raw) and raw[i + 1] == ">&" and raw[i + 2] == "1":
+                tokens.append("2>&1")
+                i = i + 3
+                continue
+            if token == "2>" and i + 1 < len(raw) and raw[i + 1] == "&1":
+                tokens.append("2>&1")
+                i = i + 2
+                continue
+            if token == ">" and i + 1 < len(raw) and raw[i + 1] == ">":
+                tokens.append(">>")
+                i = i + 2
+                continue
+            if token.endswith("2") and i + 1 < len(raw) and raw[i + 1] == ">" and token[:-1] != "":
+                tokens.append(token[:-1])
+                tokens.append("2>")
+                i = i + 2
+                continue
+            if token.endswith(">") and token != ">":
+                prefix = token[:-1]
+                if prefix != "":
+                    tokens.append(prefix)
+                tokens.append(">")
+                i = i + 1
+                continue
+            if token.endswith("<") and token != "<":
+                prefix = token[:-1]
+                if prefix != "":
+                    tokens.append(prefix)
+                tokens.append("<")
+                i = i + 1
+                continue
+            if token.endswith("|") and token != "|":
+                prefix = token[:-1]
+                if prefix != "":
+                    tokens.append(prefix)
+                tokens.append("|")
+                i = i + 1
+                continue
+            tokens.append(token)
+            i = i + 1
+        return tokens
 
 
 def main() -> None:

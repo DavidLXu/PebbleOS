@@ -14,13 +14,17 @@ Detailed architecture notes:
 - language: [LANG.md](/Users/xulixin/LX_OS/LANG.md)
 - ABI: [docs/ABI.md](/Users/xulixin/LX_OS/docs/ABI.md)
 - process model: [docs/PROCESS.md](/Users/xulixin/LX_OS/docs/PROCESS.md)
+- launcher semantics: [docs/LAUNCHER.md](/Users/xulixin/LX_OS/docs/LAUNCHER.md)
+- shell/login semantics: [docs/SHELL_LOGIN.md](/Users/xulixin/LX_OS/docs/SHELL_LOGIN.md)
 
 ## Pebble language
 
 Pebble is the system language for Pebble OS. It supports Python-style
 four-space indentation, interpreter mode with `run`, bytecode mode with `exec`,
 built-in modules like `math`, `memory`, and `heap`, and file-based user
-modules.
+modules. `run` and `exec` still exist, but they are now compatibility launchers
+alongside the preferred direct-command model described in
+[docs/LAUNCHER.md](/Users/xulixin/LX_OS/docs/LAUNCHER.md).
 
 For the full syntax, builtins, modules, examples, and execution model, see
 [LANG.md](/Users/xulixin/LX_OS/LANG.md).
@@ -88,6 +92,11 @@ Useful commands:
 - `time`
 - `run demo.peb`
 - `exec demo.peb`
+- `demo`
+- `demo &`
+- `sh script.sh`
+- `bash script.sh`
+- `bash -c "echo hello"`
 - `run system/clock_tick.peb`
 - `run system/count_tick.peb`
 - `run system/atari_pong.peb`
@@ -105,10 +114,20 @@ Useful commands:
 - `run nano.peb note.txt`
 - `run demo.peb "two words"`
 
-Pebble now has two execution modes for programs:
+Pebble now has two explicit execution modes for programs:
 
 - `run FILE [ARGS...]` executes Pebble source through the runtime interpreter
 - `exec FILE [ARGS...]` compiles Pebble source to bytecode and runs it through the bytecode VM
+
+These are compatibility entry points. The preferred shell model is:
+
+- `COMMAND [ARGS...]`
+- `COMMAND &`
+
+PebbleOS also provides a standard compatibility shell command:
+
+- `sh FILE`
+- `/bin/sh FILE`
 
 Pebble language details, math/module support, user imports, and builtins are
 documented in [LANG.md](/Users/xulixin/LX_OS/LANG.md). Pebble memory layers are
@@ -177,6 +196,19 @@ manage structured state.
 
 Once the language became expressive enough, the project started moving from
 "toy OS" toward a self-hosting direction. That shift included:
+
+- a Pebble-managed kernel ABI split with process metadata and syscall-facing modules
+- shell redirection and multi-stage pipelines for command composition
+- a `/system/bin/*.peb` external command model, with most file and text commands moved out of shell builtins
+- fd-backed stdio routing and pipe-backed shell execution so files, redirection, and pipelines share one host-side I/O model
+- PATH-based external command lookup, `/bin` compatibility mapping, and first Linux-like userland commands such as `env`, `which`, and `find`
+- Phase 4 userland expansion with `grep`, filtered `find`, multi-arg `which`, richer `env`, and a minimal `kill` path wired into the process model
+- shell/session features closer to a real login shell: `bg`, `source`, automatic `/etc/profile` loading, and default `/etc/passwd`, `/etc/group`, `/etc/fstab` placeholders
+- unified launcher behavior for Pebble programs: direct `.peb` execution by command name and `&` background launch syntax, while `run/exec/runbg/execbg` remain compatibility entry points
+- a Pebble-native `top` command for live process snapshots on top of the shared process table
+- a standard `sh` compatibility command at `/system/bin/sh.peb`, `/bin/sh` path mapping, and formal launcher/login documentation in `docs/LAUNCHER.md` and `docs/SHELL_LOGIN.md`
+- a Pebble-native `bash.peb` front-end that can run scripts, `bash -c COMMAND`, and a simple interactive REPL without adding a Python-only command path
+- interactive `bash` now runs on the attached foreground terminal path, so `bash` REPL uses Pebble `input()` directly instead of the scheduler task fallback
 
 - renaming the system to `Pebble OS`
 - separating the visible OS from the hidden Python host layer

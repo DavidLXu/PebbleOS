@@ -1,0 +1,33 @@
+import system.lib.cli
+
+args = []
+i = 0
+while i < ARGC:
+    append(args, argv(i))
+    i = i + 1
+
+if len(args) == 0:
+    text = system.lib.cli.stdin_text()
+    system.lib.cli.print_wc_triplet(system.lib.cli.count_lines(text), system.lib.cli.count_words(text), len(text), "")
+else:
+    total_lines = 0
+    total_words = 0
+    total_bytes = 0
+    i = 0
+    while i < len(args):
+        name = args[i]
+        if not file_exists(name):
+            print "file '" + name + "' does not exist"
+            i = len(args)
+        else:
+            text = read_file(name)
+            lines = system.lib.cli.count_lines(text)
+            words = system.lib.cli.count_words(text)
+            bytes = len(text)
+            total_lines = total_lines + lines
+            total_words = total_words + words
+            total_bytes = total_bytes + bytes
+            system.lib.cli.print_wc_triplet(lines, words, bytes, name)
+            i = i + 1
+    if len(args) > 1:
+        system.lib.cli.print_wc_triplet(total_lines, total_words, total_bytes, "total")

@@ -1,0 +1,67 @@
+import system.lib.cli
+
+def starts_with_path(name, prefix):
+    if name == prefix:
+        return 1
+    if len(name) <= len(prefix):
+        return 0
+    i = 0
+    while i < len(prefix):
+        if name[i] != prefix[i]:
+            return 0
+        i = i + 1
+    return name[len(prefix)] == "/"
+
+def matches_name(name, pattern):
+    if pattern == "":
+        return 1
+    base = name
+    i = len(name)
+    while i > 0:
+        i = i - 1
+        if name[i] == "/":
+            base = tail_from(name, i + 1)
+            return system.lib.cli.contains_text(base, pattern)
+    return system.lib.cli.contains_text(base, pattern)
+
+def tail_from(text, start):
+    out = ""
+    i = start
+    while i < len(text):
+        out = out + text[i]
+        i = i + 1
+    return out
+
+if ARGC > 3:
+    print "find accepts START and optional -name PATTERN"
+else:
+    prefix = ""
+    name_pattern = ""
+    if ARGC >= 1:
+        prefix = argv(0)
+        if prefix == "/":
+            prefix = ""
+        elif prefix[0] == "/":
+            out = ""
+            i = 1
+            while i < len(prefix):
+                out = out + prefix[i]
+                i = i + 1
+            prefix = out
+    if ARGC == 3:
+        if argv(1) != "-name":
+            print "find only supports -name as an extra filter"
+            prefix = "__invalid__"
+        else:
+            name_pattern = argv(2)
+    names = list_files()
+    i = 0
+    while i < len(names):
+        if prefix != "__invalid__":
+            prefix_ok = 0
+            if prefix == "" or starts_with_path(names[i], prefix) or names[i] == prefix:
+                prefix_ok = 1
+            if prefix_ok:
+                if name_pattern == "" or matches_name(names[i], name_pattern):
+                    print "/" + names[i]
+        i = i + 1

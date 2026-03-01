@@ -1,0 +1,20 @@
+import system.lib.cli
+
+if ARGC == 0:
+    text = system.lib.cli.stdin_text()
+    if text:
+        print text
+    else:
+        print "(empty)"
+elif ARGC != 1:
+    print "a file name is required"
+else:
+    name = argv(0)
+    if not file_exists(name):
+        print "file '" + name + "' does not exist"
+    else:
+        text = read_file(name)
+        if text:
+            print text
+        else:
+            print "(empty)"

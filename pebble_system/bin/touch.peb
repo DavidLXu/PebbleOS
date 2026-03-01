@@ -1,0 +1,9 @@
+if ARGC == 0:
+    print "at least one file name is required"
+else:
+    i = 0
+    while i < ARGC:
+        name = argv(i)
+        if not file_exists(name):
+            create_file(name, "")
+        i = i + 1

@@ -1,0 +1,17 @@
+if ARGC != 1:
+    print "a file name is required"
+else:
+    name = argv(0)
+    if not file_exists(name):
+        print "file '" + name + "' does not exist"
+    else:
+        current = read_file(name)
+        print "current contents:"
+        if current:
+            print current
+        else:
+            print "(empty)"
+        print "enter new contents:"
+        text = capture_text()
+        modify_file(name, text)
+        print "updated " + name

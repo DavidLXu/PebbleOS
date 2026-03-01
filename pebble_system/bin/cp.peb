@@ -1,0 +1,12 @@
+if ARGC != 2:
+    print "cp requires a source and destination"
+else:
+    src = argv(0)
+    dst = argv(1)
+    if not file_exists(src):
+        print "file '" + src + "' does not exist"
+    elif src == dst:
+        print "source and destination are the same"
+    else:
+        write_file(dst, read_file(src))
+        print "copied " + src + " to " + dst

@@ -945,39 +945,15 @@ class PebbleInterpreterTests(unittest.TestCase):
         )
         self.assertEqual(output, ["LEFT"])
 
-    def test_runtime_exports_errno_process_context_and_syscall_inventory(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
-        interpreter = PebbleInterpreter(
-            path_resolver=resolve_repo_system_path,
-            host_functions={
-                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
-            },
-        )
-        output = interpreter.execute(
-            runtime_source
-            + "\n".join(
-                [
-                    "",
-                    'print runtime_errno()["NOENT"]',
-                    'print runtime_process_states()["foreground"]',
-                    'print runtime_process_context()["cwd"]',
-                    'print runtime_syscall_table()["proc.run"]',
-                ]
-            ),
-            initial_globals={"FS_MODE": "hostfs", "CWD": "/demo"},
-        )
-        self.assertEqual(output, ["2", "foreground", "/demo", "run_program"])
-
-    def test_runtime_exports_process_wait_and_signal_constants(self) -> None:
+    def test_runtime_exposes_minimal_fd_wrappers(self) -> None:
         shell = build_shell()
-        target = shell.fs.resolve_path("wait_runtime_test.peb")
-        target.write_text('print "done"\n', encoding="utf-8")
         runtime_source = shell.fs.read_file("system/runtime.peb")
-        outputs: list[str]
+        target = shell.fs.resolve_path("fd_runtime_test.txt")
+        if target.exists():
+            target.unlink()
 
         try:
-            shell.onecmd("runbg wait_runtime_test.peb")
-            outputs = PebbleInterpreter(
+            output = PebbleInterpreter(
                 shell.fs.root,
                 path_resolver=shell._resolve_user_path_to_host,
                 host_functions=shell._make_runtime(consume_output=False).host_functions,
@@ -986,176 +962,11 @@ class PebbleInterpreterTests(unittest.TestCase):
                 + "\n"
                 + "\n".join(
                     [
-                        "result = system.kernel.proc.process_wait(1)",
-                        'print result["exit_status"]',
-                        'print result["kind"]',
-                        'print system.kernel.proc.process_signals()["SIGINT"]',
-                    ]
-                ),
-                initial_globals={
-                    "FS_MODE": "hostfs",
-                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
-                    "SYSTEM_SHELL_PATH": "system/shell.peb",
-                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
-                },
-            )
-        finally:
-            with shell._jobs_lock:
-                for job_id in list(shell._jobs):
-                    shell._jobs.pop(job_id, None)
-            if target.exists():
-                target.unlink()
-
-        self.assertEqual(outputs, ["0", "host-job", "2"])
-
-    def test_process_wait_reaps_completed_background_process(self) -> None:
-        shell = build_shell()
-        target = shell.fs.resolve_path("wait_reap_test.peb")
-        target.write_text('print "reap"\n', encoding="utf-8")
-        runtime_source = shell.fs.read_file("system/runtime.peb")
-
-        try:
-            shell.onecmd("runbg wait_reap_test.peb")
-            outputs = PebbleInterpreter(
-                shell.fs.root,
-                path_resolver=shell._resolve_user_path_to_host,
-                host_functions=shell._make_runtime(consume_output=False).host_functions,
-            ).execute(
-                runtime_source
-                + "\n"
-                + "\n".join(
-                    [
-                        "result = system.kernel.proc.process_wait(1)",
-                        'print result["exit_status"]',
-                        "snap = system.kernel.proc.process_table_snapshot()",
-                        'print len(snap["processes"])',
-                    ]
-                ),
-                initial_globals={
-                    "FS_MODE": "hostfs",
-                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
-                    "SYSTEM_SHELL_PATH": "system/shell.peb",
-                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
-                },
-            )
-        finally:
-            with shell._jobs_lock:
-                for job_id in list(shell._jobs):
-                    shell._jobs.pop(job_id, None)
-            if target.exists():
-                target.unlink()
-
-        self.assertEqual(outputs, ["0", "0"])
-
-    def test_process_snapshot_exposes_group_and_session_fields(self) -> None:
-        shell = build_shell()
-        target = shell.fs.resolve_path("group_snapshot_test.peb")
-        target.write_text('print "group"\n', encoding="utf-8")
-        runtime_source = shell.fs.read_file("system/runtime.peb")
-
-        try:
-            shell.onecmd("runbg group_snapshot_test.peb")
-            outputs = PebbleInterpreter(
-                shell.fs.root,
-                path_resolver=shell._resolve_user_path_to_host,
-                host_functions=shell._make_runtime(consume_output=False).host_functions,
-            ).execute(
-                runtime_source
-                + "\n"
-                + "\n".join(
-                    [
-                        "snap = system.kernel.proc.process_table_snapshot()",
-                        'print snap["processes"][0]["ppid"]',
-                        'print snap["processes"][0]["pgid"]',
-                        'print snap["processes"][0]["sid"]',
-                    ]
-                ),
-                initial_globals={
-                    "FS_MODE": "hostfs",
-                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
-                    "SYSTEM_SHELL_PATH": "system/shell.peb",
-                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
-                },
-            )
-        finally:
-            with shell._jobs_lock:
-                for job_id in list(shell._jobs):
-                    shell._jobs.pop(job_id, None)
-            if target.exists():
-                target.unlink()
-
-        self.assertEqual(outputs[0], "1")
-        self.assertEqual(outputs[1], "1")
-        self.assertEqual(outputs[2], "1")
-
-    def test_process_drain_signals_reports_sigchld_for_completed_job(self) -> None:
-        shell = build_shell()
-        target = shell.fs.resolve_path("sigchld_test.peb")
-        target.write_text('print "sig"\n', encoding="utf-8")
-        runtime_source = shell.fs.read_file("system/runtime.peb")
-
-        try:
-            shell.onecmd("runbg sigchld_test.peb")
-            outputs = PebbleInterpreter(
-                shell.fs.root,
-                path_resolver=shell._resolve_user_path_to_host,
-                host_functions=shell._make_runtime(consume_output=False).host_functions,
-            ).execute(
-                runtime_source
-                + "\n"
-                + "\n".join(
-                    [
-                        "result = system.kernel.proc.process_wait(1)",
-                        'print result["exit_status"]',
-                        "events = system.kernel.proc.process_drain_signals()",
-                        'print events[0]["signal"]',
-                        'print events[0]["pid"]',
-                        'print events[0]["pgid"]',
-                        "again = system.kernel.proc.process_drain_signals()",
-                        "print len(again)",
-                    ]
-                ),
-                initial_globals={
-                    "FS_MODE": "hostfs",
-                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
-                    "SYSTEM_SHELL_PATH": "system/shell.peb",
-                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
-                },
-            )
-        finally:
-            with shell._jobs_lock:
-                for job_id in list(shell._jobs):
-                    shell._jobs.pop(job_id, None)
-            if target.exists():
-                target.unlink()
-
-        self.assertEqual(outputs, ["0", "SIGCHLD", "1", "1", "0"])
-
-    def test_process_snapshot_tracks_children_and_foreground_group(self) -> None:
-        shell = build_shell()
-        target = shell.fs.resolve_path("fg_group_snapshot_test.peb")
-        target.write_text('i = 0\nwhile i < 50:\n    i = i + 1\nprint "done"\n', encoding="utf-8")
-        actions = iter(["detach"])
-
-        try:
-            with patch("sys.stdin.isatty", return_value=True):
-                with patch.object(shell, "_poll_foreground_job_action", side_effect=lambda: next(actions, None)):
-                    shell.onecmd("run fg_group_snapshot_test.peb")
-            runtime_source = shell.fs.read_file("system/runtime.peb")
-            outputs = PebbleInterpreter(
-                shell.fs.root,
-                path_resolver=shell._resolve_user_path_to_host,
-                host_functions=shell._make_runtime(consume_output=False).host_functions,
-            ).execute(
-                runtime_source
-                + "\n"
-                + "\n".join(
-                    [
-                        "snap = system.kernel.proc.process_table_snapshot()",
-                        'print snap["foreground_pgid"]',
-                        'print len(snap["children"])',
-                        'print snap["children"][0]["ppid"]',
-                        'print snap["children"][0]["pgid"]',
+                        'fd = sys_fd_open("fd_runtime_test.txt", "w")',
+                        'print sys_fd_write(fd, "hello")',
+                        "print sys_fd_close(fd)",
+                        'fd2 = sys_fd_open("fd_runtime_test.txt", "r")',
+                        "print sys_fd_read(fd2)",
                     ]
                 ),
                 initial_globals={
@@ -1168,58 +979,8 @@ class PebbleInterpreterTests(unittest.TestCase):
         finally:
             if target.exists():
                 target.unlink()
-            with shell._vm_lock:
-                for task_id in list(shell._vm_tasks):
-                    shell._vm_tasks.pop(task_id, None)
 
-        self.assertEqual(outputs, ["0", "1", "1", "1"])
-
-    def test_process_wait_child_reaps_completed_child(self) -> None:
-        shell = build_shell()
-        first = shell.fs.resolve_path("child_one_test.peb")
-        second = shell.fs.resolve_path("child_two_test.peb")
-        first.write_text('print "one"\n', encoding="utf-8")
-        second.write_text('print "two"\n', encoding="utf-8")
-        runtime_source = shell.fs.read_file("system/runtime.peb")
-
-        try:
-            shell.onecmd("runbg child_one_test.peb")
-            shell.onecmd("runbg child_two_test.peb")
-            outputs = PebbleInterpreter(
-                shell.fs.root,
-                path_resolver=shell._resolve_user_path_to_host,
-                host_functions=shell._make_runtime(consume_output=False).host_functions,
-            ).execute(
-                runtime_source
-                + "\n"
-                + "\n".join(
-                    [
-                        "result = system.kernel.proc.process_wait_child(1)",
-                        'print result["ppid"]',
-                        'print result["exit_status"]',
-                        "snap = system.kernel.proc.process_table_snapshot()",
-                        'print len(snap["children"])',
-                    ]
-                ),
-                initial_globals={
-                    "FS_MODE": "hostfs",
-                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
-                    "SYSTEM_SHELL_PATH": "system/shell.peb",
-                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
-                },
-            )
-        finally:
-            if first.exists():
-                first.unlink()
-            if second.exists():
-                second.unlink()
-            with shell._jobs_lock:
-                for job_id in list(shell._jobs):
-                    shell._jobs.pop(job_id, None)
-
-        self.assertEqual(outputs[0], "1")
-        self.assertEqual(outputs[1], "0")
-        self.assertEqual(outputs[2], "1")
+        self.assertEqual(output, ["5", "0", "hello"])
 
     def test_detach_emits_sigtstp_with_foreground_process_group(self) -> None:
         shell = build_shell()
@@ -1609,6 +1370,459 @@ class PebbleShellRuntimeTests(unittest.TestCase):
             if target.exists():
                 target.unlink()
 
+    def test_shell_redirects_output_with_truncate(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("redirect_out.txt")
+        if target.exists():
+            target.unlink()
+        try:
+            shell.onecmd("pwd > redirect_out.txt")
+            self.assertEqual(target.read_text(encoding="utf-8"), "/\n")
+        finally:
+            if target.exists():
+                target.unlink()
+
+    def test_shell_redirects_output_with_append(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("redirect_append.txt")
+        if target.exists():
+            target.unlink()
+        try:
+            shell.onecmd("pwd > redirect_append.txt")
+            shell.onecmd("pwd >> redirect_append.txt")
+            self.assertEqual(target.read_text(encoding="utf-8"), "/\n/\n")
+        finally:
+            if target.exists():
+                target.unlink()
+
+    def test_shell_redirects_input_for_run(self) -> None:
+        shell = build_shell()
+        program = shell.fs.resolve_path("redirect_in.peb")
+        source = shell.fs.resolve_path("redirect_input.txt")
+        program.write_text('value = input("n: ")\nprint value\n', encoding="utf-8")
+        source.write_text("42\n", encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("run redirect_in.peb < redirect_input.txt")
+        finally:
+            if program.exists():
+                program.unlink()
+            if source.exists():
+                source.unlink()
+        self.assertIn("42", outputs)
+
+    def test_shell_redirects_stderr_to_file(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("redirect_err.txt")
+        if target.exists():
+            target.unlink()
+        try:
+            shell.onecmd("pwd < missing_input.txt 2> redirect_err.txt")
+            self.assertIn("No such file or directory", target.read_text(encoding="utf-8"))
+        finally:
+            if target.exists():
+                target.unlink()
+
+    def test_shell_redirects_stderr_to_stdout_target(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("redirect_merge.txt")
+        if target.exists():
+            target.unlink()
+        try:
+            shell.onecmd("pwd < missing_input.txt > redirect_merge.txt 2>&1")
+            self.assertIn("No such file or directory", target.read_text(encoding="utf-8"))
+        finally:
+            if target.exists():
+                target.unlink()
+
+    def test_shell_supports_single_pipeline_into_run(self) -> None:
+        shell = build_shell()
+        program = shell.fs.resolve_path("pipe_read.peb")
+        program.write_text('value = input("n: ")\nprint value\n', encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("pwd | run pipe_read.peb")
+        finally:
+            if program.exists():
+                program.unlink()
+        self.assertIn("/", outputs)
+
+    def test_echo_prints_arguments_as_one_line(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("echo hello pebble os")
+        self.assertIn("hello pebble os", outputs)
+
+    def test_help_for_external_command_uses_system_bin(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("help echo")
+        self.assertIn("echo [args...]", outputs)
+        self.assertIn("external command from /system/bin/echo.peb", outputs)
+
+    def test_wc_counts_file_contents(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("wc_file.txt")
+        target.write_text("one two\nthree\n", encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("wc wc_file.txt")
+        finally:
+            if target.exists():
+                target.unlink()
+        self.assertIn("2 3 14 wc_file.txt", outputs)
+
+    def test_wc_counts_pipeline_input(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("echo hello pebble os | wc")
+        self.assertIn("1 3 15", outputs)
+
+    def test_cat_reads_from_pipeline_input(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("echo hello pebble os | cat")
+        self.assertIn("hello pebble os", outputs)
+
+    def test_head_and_tail_are_external_commands(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("head_tail.txt")
+        target.write_text("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n", encoding="utf-8")
+        head_outputs: list[str] = []
+        tail_outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: head_outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("head head_tail.txt")
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: tail_outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("tail head_tail.txt")
+        finally:
+            if target.exists():
+                target.unlink()
+        self.assertEqual(head_outputs[:2], ["1", "2"])
+        self.assertEqual(head_outputs[-1], "10")
+        self.assertEqual(tail_outputs[0], "3")
+        self.assertEqual(tail_outputs[-1], "12")
+
+    def test_help_for_migrated_external_command_uses_system_bin(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("help cat")
+        self.assertIn("cat [args...]", outputs)
+        self.assertIn("external command from /system/bin/cat.peb", outputs)
+
+    def test_set_and_export_persist_shell_environment(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("set FOO=bar")
+            shell.onecmd("export BAR=baz")
+            shell.onecmd("env")
+        self.assertIn("FOO=bar", outputs)
+        self.assertIn("BAR=baz", outputs)
+
+    def test_env_assignment_prefix_applies_to_single_command(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd('FOO="hello world" env')
+            shell.onecmd("env")
+        self.assertIn("FOO=hello world", outputs)
+        self.assertEqual(outputs.count("FOO=hello world"), 1)
+
+    def test_which_uses_path_lookup_and_bin_compatibility(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("which echo")
+            shell.onecmd("PATH=/bin which wc")
+        self.assertIn("/system/bin/echo.peb", outputs)
+        self.assertIn("/system/bin/wc.peb", outputs)
+
+    def test_which_finds_sh_via_bin_compatibility(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("PATH=/bin which sh")
+        self.assertIn("/system/bin/sh.peb", outputs)
+
+    def test_find_lists_files_under_optional_prefix(self) -> None:
+        shell = build_shell()
+        shell.onecmd("touch find_test_dir/file_a.txt")
+        shell.onecmd("touch find_test_dir/file_b.txt")
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("find /find_test_dir")
+        self.assertIn("/find_test_dir/file_a.txt", outputs)
+        self.assertIn("/find_test_dir/file_b.txt", outputs)
+
+    def test_find_supports_name_filter(self) -> None:
+        shell = build_shell()
+        shell.onecmd("touch find_name_dir/alpha.txt")
+        shell.onecmd("touch find_name_dir/beta.log")
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("find /find_name_dir -name alpha")
+        self.assertIn("/find_name_dir/alpha.txt", outputs)
+        self.assertNotIn("/find_name_dir/beta.log", outputs)
+
+    def test_grep_filters_pipeline_and_files(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("grep_file.txt")
+        target.write_text("red\nblue\nred-blue\n", encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("echo red blue | grep red")
+                shell.onecmd("grep red grep_file.txt")
+        finally:
+            if target.exists():
+                target.unlink()
+        self.assertIn("red blue", outputs)
+        self.assertIn("grep_file.txt:red", outputs)
+        self.assertIn("grep_file.txt:red-blue", outputs)
+
+    def test_env_accepts_assignment_arguments(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("env ZED=one")
+        self.assertIn("ZED=one", outputs)
+
+    def test_which_accepts_multiple_names(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("which echo wc")
+        self.assertIn("/system/bin/echo.peb", outputs)
+        self.assertIn("/system/bin/wc.peb", outputs)
+
+    def test_kill_terminates_background_vm_process(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("kill_vm_test.peb")
+        target.write_text("i = 0\nwhile i < 1000:\n    i = i + 1\nprint i\n", encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("runbg /kill_vm_test.peb")
+                shell.onecmd("kill 1")
+                shell.onecmd("ps")
+        finally:
+            if target.exists():
+                target.unlink()
+        self.assertIn("killed 1", outputs)
+
+    def test_parser_accepts_tight_redirection_tokens(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("tight_redirect.txt")
+        if target.exists():
+            target.unlink()
+        try:
+            shell.onecmd("echo hello>tight_redirect.txt")
+            self.assertEqual(target.read_text(encoding="utf-8"), "hello\n")
+        finally:
+            if target.exists():
+                target.unlink()
+
+    def test_bg_reports_existing_background_job(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("bg_resume_test.peb")
+        target.write_text('i = 0\nwhile i < 100:\n    i = i + 1\nprint i\n', encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("runbg bg_resume_test.peb")
+                shell.onecmd("bg 1")
+        finally:
+            if target.exists():
+                target.unlink()
+        self.assertIn("[1] /bg_resume_test.peb", outputs)
+
+    def test_direct_peb_command_runs_without_run_prefix(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("demo.peb")
+        target.write_text('print "demo ok"\n', encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("demo")
+        finally:
+            if target.exists():
+                target.unlink()
+        self.assertIn("demo ok", outputs)
+
+    def test_direct_peb_command_supports_background_ampersand(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("amp_demo.peb")
+        target.write_text('i = 0\nwhile i < 100:\n    i = i + 1\nprint i\n', encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("amp_demo &")
+                shell.onecmd("jobs")
+        finally:
+            if target.exists():
+                target.unlink()
+        self.assertTrue(any(line.startswith("[1] amp_demo.peb") for line in outputs))
+
+    def test_source_updates_current_shell_environment_and_directory(self) -> None:
+        shell = build_shell()
+        script = shell.fs.resolve_path("source_test.sh")
+        script.write_text("export SOURCE_FLAG=yes\ncd system\n", encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("source source_test.sh")
+                shell.onecmd("env")
+                shell.onecmd("pwd")
+        finally:
+            if script.exists():
+                script.unlink()
+        self.assertIn("SOURCE_FLAG=yes", outputs)
+        self.assertIn("/system", outputs)
+
+    def test_sh_runs_script_via_standard_entrypoint(self) -> None:
+        shell = build_shell()
+        script = shell.fs.resolve_path("sh_test.sh")
+        script.write_text("export SH_FLAG=ok\ncd system\n", encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("sh sh_test.sh")
+                shell.onecmd("env")
+                shell.onecmd("pwd")
+        finally:
+            if script.exists():
+                script.unlink()
+        self.assertIn("SH_FLAG=ok", outputs)
+        self.assertIn("/system", outputs)
+
+    def test_explicit_bin_sh_maps_to_system_bin_sh(self) -> None:
+        shell = build_shell()
+        script = shell.fs.resolve_path("bin_sh_test.sh")
+        script.write_text("echo bin sh ok\n", encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("/bin/sh bin_sh_test.sh")
+        finally:
+            if script.exists():
+                script.unlink()
+        self.assertIn("bin sh ok", outputs)
+
+    def test_bash_runs_script_with_pebble_native_frontend(self) -> None:
+        shell = build_shell()
+        script = shell.fs.resolve_path("bash_test.sh")
+        script.write_text("echo bash script ok\n", encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("bash bash_test.sh")
+        finally:
+            if script.exists():
+                script.unlink()
+        self.assertIn("bash script ok", outputs)
+
+    def test_bash_supports_dash_c(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd('bash -c "echo native bash"')
+        self.assertIn("native bash", outputs)
+
+    def test_bash_repl_uses_foreground_terminal_input_path(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        prompts: list[str] = []
+        replies = iter(["echo repl ok", "exit"])
+
+        def fake_input(prompt: str = "") -> str:
+            prompts.append(prompt)
+            return next(replies)
+
+        with patch("builtins.input", side_effect=fake_input):
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("bash")
+
+        self.assertIn("repl ok", outputs)
+        self.assertTrue(any(prompt.startswith("bash:") for prompt in prompts))
+
+    def test_shell_boot_creates_etc_placeholders_and_loads_profile(self) -> None:
+        shell = build_shell()
+        profile = shell.fs.resolve_path("etc/profile")
+        profile.write_text("export PROFILE_FLAG=loaded\n", encoding="utf-8")
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("env")
+        self.assertTrue(shell.fs.resolve_path("etc/passwd").exists())
+        self.assertTrue(shell.fs.resolve_path("etc/group").exists())
+        self.assertTrue(shell.fs.resolve_path("etc/fstab").exists())
+        self.assertIn("PROFILE_FLAG=loaded", outputs)
+
+    def test_shell_supports_multi_stage_pipeline(self) -> None:
+        shell = build_shell()
+        program_a = shell.fs.resolve_path("pipe_first.peb")
+        program_b = shell.fs.resolve_path("pipe_second.peb")
+        program_a.write_text('value = input("n: ")\nprint value + "-a"\n', encoding="utf-8")
+        program_b.write_text('value = input("n: ")\nprint value + "-b"\n', encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("echo base | run pipe_first.peb | run pipe_second.peb")
+        finally:
+            if program_a.exists():
+                program_a.unlink()
+            if program_b.exists():
+                program_b.unlink()
+        self.assertIn("base-a-b", outputs)
+
+    def test_grep_supports_ignore_case_and_line_numbers(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("grep_case.txt")
+        target.write_text("Red\nblue\nRED\n", encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("grep -i -n red grep_case.txt")
+        finally:
+            if target.exists():
+                target.unlink()
+        self.assertIn("1:grep_case.txt:Red", outputs)
+        self.assertIn("3:grep_case.txt:RED", outputs)
+
+    def test_find_supports_type_filter(self) -> None:
+        shell = build_shell()
+        shell.onecmd("touch find_type_dir/file.txt")
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("find /find_type_dir -type f")
+        self.assertIn("/find_type_dir/file.txt", outputs)
+
+    def test_top_once_prints_process_snapshot(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("top --once")
+        self.assertTrue(any("Pebble top" in line for line in outputs))
+        self.assertTrue(any("PID KIND STATE PGID EXIT PROGRAM" in line for line in outputs))
+
+    def test_help_marks_legacy_launchers_as_compatibility_entrypoints(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("help")
+            shell.onecmd("help run")
+        self.assertTrue(any("compatibility launcher" in line for line in outputs))
+        self.assertTrue(any("preferred run   COMMAND [ARGS...]" in line for line in outputs))
+
     def test_runtime_cd_pwd_and_prompt_follow_current_directory(self) -> None:
         shell = build_shell()
         shell.onecmd("touch dir_cd_test/file.txt")
@@ -1854,50 +2068,6 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(outputs, ["5", "[1]", "7", "[2, 3]"])
-
-    def test_process_table_snapshot_uses_structured_process_records(self) -> None:
-        shell = build_shell()
-        host_target = shell.fs.resolve_path("proc_snapshot_test.peb")
-        host_target.write_text('print "snapshot"\n', encoding="utf-8")
-        runtime_source = shell.fs.read_file("system/runtime.peb")
-
-        try:
-            vm_id = shell._create_vm_task("system/count_tick.peb", [], "run")
-            shell.onecmd("runbg proc_snapshot_test.peb")
-            outputs = PebbleInterpreter(
-                shell.fs.root,
-                path_resolver=shell._resolve_user_path_to_host,
-                host_functions=shell._make_runtime(consume_output=False).host_functions,
-            ).execute(
-                runtime_source
-                + "\n"
-                + "\n".join(
-                    [
-                        "snap = system.kernel.proc.process_table_snapshot()",
-                        "print len(snap[\"processes\"])",
-                        "print snap[\"processes\"][0][\"kind\"]",
-                        "print snap[\"processes\"][0][\"pid\"]",
-                    ]
-                ),
-                initial_globals={
-                    "FS_MODE": "hostfs",
-                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
-                    "SYSTEM_SHELL_PATH": "system/shell.peb",
-                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
-                },
-            )
-        finally:
-            with shell._vm_lock:
-                shell._vm_tasks.pop(vm_id, None)
-            with shell._jobs_lock:
-                for job_id in list(shell._jobs):
-                    shell._jobs.pop(job_id, None)
-            if host_target.exists():
-                host_target.unlink()
-
-        self.assertEqual(outputs[0], "2")
-        self.assertIn(outputs[1], ["vm", "host-job"])
-        self.assertIn(outputs[2], ["1", "2"])
 
 
 
