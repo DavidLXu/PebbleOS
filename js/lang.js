@@ -85,7 +85,7 @@ function tokenizeExpr(src, lineNum) {
 
     // Single-char tokens
     const ch = src[i];
-    if ('+-*/<>'.includes(ch)) { tokens.push({ t: TT.OP, v: ch }); i++; continue; }
+    if ('+-*/<>%'.includes(ch)) { tokens.push({ t: TT.OP, v: ch }); i++; continue; }
     if (ch === '(') { tokens.push({ t: TT.LPAREN, v: ch }); i++; continue; }
     if (ch === ')') { tokens.push({ t: TT.RPAREN, v: ch }); i++; continue; }
     if (ch === '[') { tokens.push({ t: TT.LBRACKET, v: ch }); i++; continue; }
@@ -185,7 +185,7 @@ class ExprParser {
 
   parseMulDiv() {
     let left = this.parseUnary();
-    while (this.at(TT.OP) && (this.peek().v === '*' || this.peek().v === '/')) {
+    while (this.at(TT.OP) && (this.peek().v === '*' || this.peek().v === '/' || this.peek().v === '%')) {
       const op = this.consume().v;
       const right = this.parseUnary();
       left = { type: 'BinaryExpr', op, left, right, line: this.lineNum };
@@ -810,6 +810,12 @@ export class PebbleInterpreter {
           return l / r;
         }
         throw new PebbleError(`line ${line}: '/' requires numeric operands`);
+      case '%':
+        if (typeof l === 'number' && typeof r === 'number') {
+          if (r === 0) throw new PebbleError(`line ${line}: modulo by zero`);
+          return l % r;
+        }
+        throw new PebbleError(`line ${line}: '%' requires numeric operands`);
       case '<': return l < r ? 1 : 0;
       case '>': return l > r ? 1 : 0;
       case '==': return l == r ? 1 : 0;  // intentional == for cross-type

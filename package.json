@@ -1,0 +1,6 @@
+{
+  "type": "module",
+  "scripts": {
+    "test": "node --test js/tests/test_fs.js js/tests/test_lang.js"
+  }
+}
