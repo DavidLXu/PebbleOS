@@ -1,0 +1,21 @@
+def rewrite_text(text):
+    out = "# rewritten by rewrite.peb\n"
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\t":
+            out = out + "    "
+        else:
+            out = out + ch
+        i = i + 1
+    return out
+
+if ARGC < 2:
+    print "usage: run rewrite.peb INPUT OUTPUT"
+else:
+    source_path = argv(0)
+    output_path = argv(1)
+    source_text = read_file(source_path)
+    new_text = rewrite_text(source_text)
+    write_file(output_path, new_text)
+    print "rewrote " + source_path + " -> " + output_path

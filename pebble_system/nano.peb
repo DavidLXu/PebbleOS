@@ -1,0 +1,220 @@
+def current_line(buffer, row):
+    return buffer[row]
+
+def insert_char(line, col, ch):
+    return slice_text(line, 0, col) + ch + slice_text(line, col, len(line))
+
+def remove_char(line, col):
+    return slice_text(line, 0, col) + slice_text(line, col + 1, len(line))
+
+def split_line(buffer, row, col):
+    line = current_line(buffer, row)
+    left = slice_text(line, 0, col)
+    right = slice_text(line, col, len(line))
+    out = []
+    i = 0
+    while i < len(buffer):
+        if i == row:
+            append(out, left)
+            append(out, right)
+        else:
+            append(out, buffer[i])
+        i = i + 1
+    return [out, row + 1, 0]
+
+def insert_at_cursor(buffer, row, col, ch):
+    line = current_line(buffer, row)
+    out = replace_line(buffer, row, insert_char(line, col, ch))
+    return [out, row, col + len(ch)]
+
+def backspace_at_cursor(buffer, row, col):
+    if col > 0:
+        line = current_line(buffer, row)
+        out = replace_line(buffer, row, remove_char(line, col - 1))
+        return [out, row, col - 1]
+    if row == 0:
+        return [buffer, row, col]
+    previous = current_line(buffer, row - 1)
+    line = current_line(buffer, row)
+    merged = previous + line
+    out = replace_line(buffer, row - 1, merged)
+    out = delete_line(out, row)
+    return [out, row - 1, len(previous)]
+
+def delete_at_cursor(buffer, row, col):
+    line = current_line(buffer, row)
+    if col < len(line):
+        out = replace_line(buffer, row, remove_char(line, col))
+        return [out, row, col]
+    if row + 1 >= len(buffer):
+        return [buffer, row, col]
+    merged = line + current_line(buffer, row + 1)
+    out = replace_line(buffer, row, merged)
+    out = delete_line(out, row + 1)
+    return [out, row, col]
+
+def ensure_view(state, buffer):
+    rows = screen_rows()
+    cols = screen_cols()
+    body = rows - 2
+    if body < 1:
+        body = 1
+    if state["row"] < state["top"]:
+        state["top"] = state["row"]
+    if state["row"] >= state["top"] + body:
+        state["top"] = state["row"] - body + 1
+    if state["col"] < state["left"]:
+        state["left"] = state["col"]
+    if state["col"] >= state["left"] + cols:
+        state["left"] = state["col"] - cols + 1
+    line = current_line(buffer, state["row"])
+    if state["col"] > len(line):
+        state["col"] = len(line)
+    if state["top"] < 0:
+        state["top"] = 0
+    if state["left"] < 0:
+        state["left"] = 0
+    return 0
+
+def draw_status(text, cols):
+    draw_text("\x1b[7m" + pad_right(text, cols) + "\x1b[m")
+
+def editor_title(state, buffer):
+    marker = ""
+    if state["dirty"]:
+        marker = " *"
+    return " GNU nano 8.0    " + TARGET_FILE + marker + "    " + str(state["row"] + 1) + "," + str(state["col"] + 1)
+
+def status_text(state):
+    if state["confirm"]:
+        return "Save modified buffer? (Y Yes, N No, ^C Cancel)"
+    return state["message"]
+
+def draw_editor(state, buffer):
+    rows = screen_rows()
+    cols = screen_cols()
+    body = rows - 2
+    if body < 1:
+        body = 1
+    hide_cursor()
+    clear_screen()
+    move_cursor(1, 1)
+    draw_status(editor_title(state, buffer), cols)
+    i = 0
+    while i < body:
+        move_cursor(i + 2, 1)
+        line_index = state["top"] + i
+        if line_index < len(buffer):
+            visible = slice_text(buffer[line_index], state["left"], state["left"] + cols)
+            draw_text(pad_right(visible, cols))
+        else:
+            draw_text("~")
+        i = i + 1
+    move_cursor(rows, 1)
+    if len(status_text(state)) > 0:
+        draw_status(status_text(state), cols)
+    else:
+        draw_status("^G Help  ^O Write Out  ^X Exit  Arrows Move", cols)
+    cursor_row = state["row"] - state["top"] + 2
+    cursor_col = state["col"] - state["left"] + 1
+    move_cursor(clamp(cursor_row, 2, rows - 1), clamp(cursor_col, 1, cols))
+    show_cursor()
+    flush_screen()
+    return 0
+
+def write_out(state, buffer):
+    write_file(TARGET_FILE, join_lines(buffer))
+    state["dirty"] = 0
+    state["message"] = "[ Wrote " + str(len(buffer)) + " lines ]"
+    return 0
+
+buffer = split_lines(FILE_CONTENT)
+if len(buffer) == 0:
+    buffer = [""]
+
+state = {"row": 0, "col": 0, "top": 0, "left": 0, "dirty": 0, "running": 1, "confirm": 0, "message": ""}
+
+while state["running"]:
+    ensure_view(state, buffer)
+    draw_editor(state, buffer)
+    key = read_key()
+    state["message"] = ""
+
+    if state["confirm"]:
+        if key == "Y" or key == "y":
+            write_out(state, buffer)
+            state["running"] = 0
+        elif key == "N" or key == "n":
+            state["running"] = 0
+        elif key == "\x03":
+            state["confirm"] = 0
+            state["message"] = "Cancelled"
+        elif key == "ESC":
+            state["confirm"] = 0
+            state["message"] = "Cancelled"
+        else:
+            state["message"] = "Answer Y or N"
+    elif key == "^X":
+        if state["dirty"]:
+            state["confirm"] = 1
+        else:
+            state["running"] = 0
+    elif key == "^O":
+        write_out(state, buffer)
+    elif key == "UP":
+        if state["row"] > 0:
+            state["row"] = state["row"] - 1
+    elif key == "DOWN":
+        if state["row"] + 1 < len(buffer):
+            state["row"] = state["row"] + 1
+    elif key == "LEFT":
+        if state["col"] > 0:
+            state["col"] = state["col"] - 1
+        elif state["row"] > 0:
+            state["row"] = state["row"] - 1
+            state["col"] = len(current_line(buffer, state["row"]))
+    elif key == "RIGHT":
+        line = current_line(buffer, state["row"])
+        if state["col"] < len(line):
+            state["col"] = state["col"] + 1
+        elif state["row"] + 1 < len(buffer):
+            state["row"] = state["row"] + 1
+            state["col"] = 0
+    elif key == "HOME":
+        state["col"] = 0
+    elif key == "END":
+        state["col"] = len(current_line(buffer, state["row"]))
+    elif key == "PAGEUP":
+        state["row"] = max_value(0, state["row"] - max_value(1, screen_rows() - 2))
+    elif key == "PAGEDOWN":
+        state["row"] = min_value(len(buffer) - 1, state["row"] + max_value(1, screen_rows() - 2))
+    elif key == "BACKSPACE":
+        result = backspace_at_cursor(buffer, state["row"], state["col"])
+        buffer = result[0]
+        state["row"] = result[1]
+        state["col"] = result[2]
+        state["dirty"] = 1
+    elif key == "DELETE":
+        result = delete_at_cursor(buffer, state["row"], state["col"])
+        buffer = result[0]
+        state["row"] = result[1]
+        state["col"] = result[2]
+        state["dirty"] = 1
+    elif key == "ENTER":
+        result = split_line(buffer, state["row"], state["col"])
+        buffer = result[0]
+        state["row"] = result[1]
+        state["col"] = result[2]
+        state["dirty"] = 1
+    elif len(key) == 1:
+        if key >= " ":
+            result = insert_at_cursor(buffer, state["row"], state["col"], key)
+            buffer = result[0]
+            state["row"] = result[1]
+            state["col"] = result[2]
+            state["dirty"] = 1
+
+clear_screen()
+move_cursor(1, 1)
+show_cursor()
+flush_screen()

@@ -1,0 +1,7 @@
+def make_list():
+    return ["x", 3]
+
+value = make_list()
+print len(value)
+print value[0]
+print value[1]

@@ -1,0 +1,54 @@
+def count_lines(text):
+    if len(text) == 0:
+        return 0
+    count = 1
+    i = 0
+    while i < len(text):
+        if text[i] == "\n":
+            count = count + 1
+        i = i + 1
+    return count
+
+def count_words(text):
+    count = 0
+    in_word = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == " ":
+            in_word = 0
+        elif ch == "\n":
+            in_word = 0
+        else:
+            if in_word == 0:
+                count = count + 1
+                in_word = 1
+        i = i + 1
+    return count
+
+def preview(text, limit):
+    out = ""
+    i = 0
+    running = 1
+    while running:
+        if i < len(text):
+            if i < limit:
+                out = out + text[i]
+                i = i + 1
+            else:
+                running = 0
+        else:
+            running = 0
+    return out
+
+if ARGC == 0:
+    print "usage: run inspect.peb FILE"
+else:
+    path = argv(0)
+    text = read_file(path)
+    print "file: " + path
+    print "chars: " + str(len(text))
+    print "lines: " + str(count_lines(text))
+    print "words: " + str(count_words(text))
+    print "preview:"
+    print preview(text, 120)

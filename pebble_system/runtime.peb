@@ -1,0 +1,175 @@
+def count_lines(text):
+    if len(text) == 0:
+        return 0
+    count = 1
+    i = 0
+    while i < len(text):
+        if text[i] == "\n":
+            count = count + 1
+        i = i + 1
+    return count
+
+def first_line(text):
+    out = ""
+    i = 0
+    running = 1
+    while running:
+        if i < len(text):
+            if text[i] == "\n":
+                running = 0
+            else:
+                out = out + text[i]
+                i = i + 1
+        else:
+            running = 0
+    return out
+
+def split_lines(text):
+    lines = []
+    current = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\n":
+            append(lines, current)
+            current = ""
+        else:
+            current = current + ch
+        i = i + 1
+    if len(text) == 0:
+        return [""]
+    append(lines, current)
+    return lines
+
+def join_lines(lines):
+    text = ""
+    i = 0
+    while i < len(lines):
+        if i > 0:
+            text = text + "\n"
+        text = text + lines[i]
+        i = i + 1
+    return text
+
+def slice_text(text, start_index, end_index):
+    out = ""
+    i = start_index
+    while i < end_index:
+        if i >= 0 and i < len(text):
+            out = out + text[i]
+        i = i + 1
+    return out
+
+def repeat_text(text, count):
+    out = ""
+    i = 0
+    while i < count:
+        out = out + text
+        i = i + 1
+    return out
+
+def pad_right(text, width):
+    if len(text) >= width:
+        return slice_text(text, 0, width)
+    return text + repeat_text(" ", width - len(text))
+
+def clamp(value, low, high):
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
+
+def max_value(left, right):
+    if left > right:
+        return left
+    return right
+
+def min_value(left, right):
+    if left < right:
+        return left
+    return right
+
+def rest(items):
+    out = []
+    i = 1
+    while i < len(items):
+        append(out, items[i])
+        i = i + 1
+    return out
+
+def replace_line(lines, row, text):
+    out = []
+    i = 0
+    while i < len(lines):
+        if i == row:
+            append(out, text)
+        else:
+            append(out, lines[i])
+        i = i + 1
+    return out
+
+def insert_line(lines, row, text):
+    out = []
+    i = 0
+    inserted = 0
+    while i < len(lines):
+        if i == row:
+            append(out, text)
+            inserted = 1
+        append(out, lines[i])
+        i = i + 1
+    if inserted == 0:
+        append(out, text)
+    return out
+
+def delete_line(lines, row):
+    out = []
+    i = 0
+    while i < len(lines):
+        if i != row:
+            append(out, lines[i])
+        i = i + 1
+    if len(out) == 0:
+        return [""]
+    return out
+
+def term_write_line(text):
+    term_write(text + "\r\n")
+
+def screen_rows():
+    return term_rows()
+
+def screen_cols():
+    return term_cols()
+
+def clear_screen():
+    term_clear()
+
+def move_cursor(row, col):
+    term_move(row, col)
+
+def hide_cursor():
+    term_hide_cursor()
+
+def show_cursor():
+    term_show_cursor()
+
+def flush_screen():
+    term_flush()
+
+def read_key():
+    return term_read_key()
+
+def draw_text(text):
+    term_write(text)
+
+def runtime_banner():
+    return "[runtime] Pebble runtime booting"
+
+def boot():
+    print runtime_banner()
+    print "[runtime] shell module: " + SYSTEM_SHELL_PATH
+    print "[runtime] shell lines: " + str(count_lines(SYSTEM_SHELL_SOURCE))
+    print "[runtime] shell head: " + first_line(SYSTEM_SHELL_SOURCE)
+    print "[runtime] boot complete"

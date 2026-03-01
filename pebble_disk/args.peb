@@ -1,0 +1,3 @@
+print ARGC
+print ARGV[0]
+print argv(1)

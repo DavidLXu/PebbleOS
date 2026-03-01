@@ -1,0 +1,116 @@
+def split_lines(text):
+    lines = []
+    current = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\n":
+            append(lines, current)
+            current = ""
+        else:
+            current = current + ch
+        i = i + 1
+    if len(text) == 0:
+        return lines
+    append(lines, current)
+    return lines
+
+def join_lines(lines):
+    text = ""
+    i = 0
+    while i < len(lines):
+        if i > 0:
+            text = text + "\n"
+        text = text + lines[i]
+        i = i + 1
+    return text
+
+def show_screen(lines, dirty):
+    print ""
+    print " GNU nano 8.0                      " + TARGET_FILE
+    print "============================================================"
+    if len(lines) == 0:
+        print "(empty buffer)"
+    i = 0
+    while i < len(lines):
+        print str(i + 1) + " " + lines[i]
+        i = i + 1
+    print "============================================================"
+    if dirty:
+        print "[Modified]"
+    else:
+        print "[Saved]"
+    print "^O Write Out    ^X Exit    ^R Replace Line    ^D Delete Line"
+    print "Type plain text to append a new line."
+
+def valid_line_number(number, lines):
+    if number < 1:
+        return 0
+    if number > len(lines):
+        return 0
+    return 1
+
+def remove_line(lines, number):
+    result = []
+    i = 0
+    while i < len(lines):
+        if i != number - 1:
+            append(result, lines[i])
+        i = i + 1
+    return result
+
+def write_out(lines):
+    write_file(TARGET_FILE, join_lines(lines))
+    print "[ Wrote " + str(len(lines)) + " lines ]"
+    return 0
+
+lines = split_lines(FILE_CONTENT)
+dirty = 0
+running = 1
+
+show_screen(lines, dirty)
+
+while running:
+    cmd = input("Text or command: ")
+    if cmd == "^O":
+        dirty = write_out(lines)
+    elif cmd == "^X":
+        if dirty:
+            answer = input("Save modified buffer before exit? (Y/N): ")
+            if answer == "Y":
+                dirty = write_out(lines)
+                running = 0
+            elif answer == "y":
+                dirty = write_out(lines)
+                running = 0
+            elif answer == "N":
+                running = 0
+            elif answer == "n":
+                running = 0
+        else:
+            running = 0
+    elif cmd == "^R":
+        if len(lines) == 0:
+            print "[ Buffer is empty ]"
+        else:
+            number = int(input("Replace line number: "))
+            if valid_line_number(number, lines):
+                lines[number - 1] = input("Replacement text: ")
+                dirty = 1
+            else:
+                print "[ Invalid line number ]"
+    elif cmd == "^D":
+        if len(lines) == 0:
+            print "[ Buffer is empty ]"
+        else:
+            number = int(input("Delete line number: "))
+            if valid_line_number(number, lines):
+                lines = remove_line(lines, number)
+                dirty = 1
+            else:
+                print "[ Invalid line number ]"
+    elif cmd == "^L":
+        show_screen(lines, dirty)
+    else:
+        append(lines, cmd)
+        dirty = 1
