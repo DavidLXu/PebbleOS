@@ -496,7 +496,7 @@ class PebbleParser {
     const m = text.match(ASSIGN_RE);
     if (m) {
       const targetText = m[1].trim();
-      const valueText = m[3].trim();
+      const valueText = m[2].trim();
       // Parse target: name OR name[expr]
       const target = this._parseAssignTarget(targetText, num);
       if (target) {
