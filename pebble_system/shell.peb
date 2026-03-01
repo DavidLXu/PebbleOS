@@ -1,3 +1,5 @@
+import system.kernel.proc
+
 def shell_name():
     return "Pebble Runtime Shell"
 
@@ -44,6 +46,8 @@ def shell_dispatch(command, args):
         return command_exec(args)
     elif command == "execbg":
         return command_execbg(args)
+    elif command == "ps":
+        return command_ps(args)
     elif command == "jobs":
         return command_jobs(args)
     elif command == "fg":
@@ -79,6 +83,7 @@ def command_help(args):
         print "  runbg FILE [A]  run a non-interactive Pebble program in the background"
         print "  exec FILE [ARG] run a Pebble program in bytecode mode"
         print "  execbg FILE [A] run a non-interactive bytecode Pebble program in the background"
+        print "  ps              list system-visible processes and tasks"
         print "  jobs            list background jobs"
         print "  fg ID           wait for a background job and print its output"
         print "  nano NAME       open the Pebble editor"
@@ -141,6 +146,9 @@ def command_help(args):
     elif topic == "execbg":
         print "execbg FILE [ARGS...]"
         print "run a non-interactive bytecode Pebble program in the background"
+    elif topic == "ps":
+        print "ps"
+        print "list system-visible Pebble tasks and host-managed background jobs"
     elif topic == "jobs":
         print "jobs"
         print "list background jobs started by Pebble OS"
@@ -351,9 +359,23 @@ def command_jobs(args):
     if len(args) != 0:
         print "this command does not take arguments"
         return 0
-    lines = list_background_jobs()
+    lines = system.kernel.proc.process_jobs()
     if len(lines) == 0:
         print "(no jobs)"
+        return 0
+    i = 0
+    while i < len(lines):
+        print lines[i]
+        i = i + 1
+    return 0
+
+def command_ps(args):
+    if len(args) != 0:
+        print "this command does not take arguments"
+        return 0
+    lines = system.kernel.proc.process_list()
+    if len(lines) == 0:
+        print "(no processes)"
         return 0
     i = 0
     while i < len(lines):
@@ -365,7 +387,7 @@ def command_fg(args):
     if len(args) != 1:
         print "fg requires exactly one job id"
         return 0
-    lines = foreground_job(int(args[0]))
+    lines = system.kernel.proc.process_foreground(int(args[0]))
     i = 0
     while i < len(lines):
         print lines[i]
@@ -377,16 +399,10 @@ def dispatch_program(program, extra, mode):
         print "file '" + program + "' does not exist"
         return 0
     if is_system_path(program) or fs_run_uses_shadow() == 0:
-        if mode == "exec":
-            exec_program(program, extra)
-        else:
-            run_program(program, extra)
+        system.kernel.proc.process_spawn(program, extra, mode)
         return 0
     raw_write_file(VFS_RUN_SHADOW_FILE, read_file(program))
-    if mode == "exec":
-        exec_program(VFS_RUN_SHADOW_FILE, extra)
-    else:
-        run_program(VFS_RUN_SHADOW_FILE, extra)
+    system.kernel.proc.process_spawn(VFS_RUN_SHADOW_FILE, extra, mode)
     raw_delete_file(VFS_RUN_SHADOW_FILE)
     return 0
 
@@ -397,7 +413,7 @@ def dispatch_background_program(program, extra, mode):
     if is_system_path(program) == 0 and fs_run_uses_shadow():
         print "background jobs currently require host-backed or system programs"
         return 0
-    job_id = start_background_job(program, extra, mode)
+    job_id = system.kernel.proc.process_spawn_background(program, extra, mode)
     print "[" + str(job_id) + "] " + program
     return 0
 

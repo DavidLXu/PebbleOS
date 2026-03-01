@@ -35,6 +35,9 @@ class BackgroundJob:
     status: str = "running"
     error: str | None = None
     thread: threading.Thread | None = None
+    ppid: int = 1
+    pgid: int = 0
+    sid: int = 1
 
 
 @dataclass
@@ -49,6 +52,26 @@ class VMTask:
     status: str = "ready"
     error: str | None = None
     attached: bool = False
+    ppid: int = 1
+    pgid: int = 0
+    sid: int = 1
+
+
+@dataclass
+class HostProcessRecord:
+    pid: int
+    kind: str
+    state: str
+    command: str
+    program: str
+    argv: list[str]
+    cwd: str
+    ppid: int = 1
+    pgid: int = 0
+    sid: int = 1
+    attached: bool = False
+    exit_status: int = 0
+    error: str | None = None
 
 
 class PebbleShell(cmd.Cmd):
@@ -74,6 +97,9 @@ class PebbleShell(cmd.Cmd):
         self._vm_lock = threading.Lock()
         self._vm_snapshots: dict[int, dict[str, object]] = {}
         self._next_vm_snapshot_id = 1
+        self._pending_signal_events: list[dict[str, object]] = []
+        self._signal_notified_pids: set[int] = set()
+        self._foreground_pgid: int | None = None
         self._detach_requested = threading.Event()
         self._main_thread_id = threading.get_ident()
         self._terminal_owner_thread_id: int | None = None
@@ -159,6 +185,7 @@ class PebbleShell(cmd.Cmd):
             "runbg",
             "exec",
             "execbg",
+            "ps",
             "jobs",
             "fg",
             "nano",
@@ -401,7 +428,16 @@ class PebbleShell(cmd.Cmd):
                 "exec_program": self._host_exec_program,
                 "start_background_job": self._host_start_background_job,
                 "list_background_jobs": self._host_list_background_jobs,
+                "list_processes": self._host_list_processes,
+                "list_process_records": self._host_list_process_records,
+                "list_child_processes": self._host_list_child_processes,
+                "current_foreground_pgid": self._host_current_foreground_pgid,
+                "list_signal_events": self._host_list_signal_events,
+                "drain_signal_events": self._host_drain_signal_events,
                 "foreground_job": self._host_foreground_job,
+                "wait_process": self._host_wait_process,
+                "wait_child_process": self._host_wait_child_process,
+                "reap_process": self._host_reap_process,
                 "vm_create_task": self._host_vm_create_task,
                 "vm_step_task": self._host_vm_step_task,
                 "vm_task_status": self._host_vm_task_status,
@@ -712,11 +748,69 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: list_background_jobs() expected 0 arguments but got {len(args)}")
         return self._list_background_jobs()
 
+    def _host_list_processes(self, args: list[object], line_number: int) -> list[str]:
+        if args:
+            raise PebbleError(f"line {line_number}: list_processes() expected 0 arguments but got {len(args)}")
+        return self._list_processes()
+
+    def _host_list_process_records(self, args: list[object], line_number: int) -> list[dict[str, object]]:
+        if args:
+            raise PebbleError(f"line {line_number}: list_process_records() expected 0 arguments but got {len(args)}")
+        return [self._process_record_to_dict(record) for record in self._collect_process_records()]
+
+    def _host_list_signal_events(self, args: list[object], line_number: int) -> list[dict[str, object]]:
+        if args:
+            raise PebbleError(f"line {line_number}: list_signal_events() expected 0 arguments but got {len(args)}")
+        return list(self._pending_signal_events)
+
+    def _host_list_child_processes(self, args: list[object], line_number: int) -> list[dict[str, object]]:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: list_child_processes() expects 1 integer argument")
+        return [self._process_record_to_dict(record) for record in self._child_process_records(args[0])]
+
+    def _host_current_foreground_pgid(self, args: list[object], line_number: int) -> int:
+        if args:
+            raise PebbleError(f"line {line_number}: current_foreground_pgid() expected 0 arguments but got {len(args)}")
+        if self._foreground_pgid is None:
+            return 0
+        return self._foreground_pgid
+
+    def _host_drain_signal_events(self, args: list[object], line_number: int) -> list[dict[str, object]]:
+        if args:
+            raise PebbleError(f"line {line_number}: drain_signal_events() expected 0 arguments but got {len(args)}")
+        events = list(self._pending_signal_events)
+        self._pending_signal_events = []
+        return events
+
     def _host_foreground_job(self, args: list[object], line_number: int) -> list[str]:
         if len(args) != 1 or not isinstance(args[0], int):
             raise PebbleError(f"line {line_number}: foreground_job() expects 1 integer argument")
         try:
             return self._foreground_job(args[0])
+        except (FileSystemError, PebbleError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+
+    def _host_wait_process(self, args: list[object], line_number: int) -> dict[str, object]:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: wait_process() expects 1 integer argument")
+        try:
+            return self._wait_process(args[0])
+        except (FileSystemError, PebbleError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+
+    def _host_wait_child_process(self, args: list[object], line_number: int) -> dict[str, object]:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: wait_child_process() expects 1 integer argument")
+        try:
+            return self._wait_child_process(args[0])
+        except (FileSystemError, PebbleError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+
+    def _host_reap_process(self, args: list[object], line_number: int) -> dict[str, object]:
+        if len(args) != 1 or not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: reap_process() expects 1 integer argument")
+        try:
+            return self._reap_process(args[0])
         except (FileSystemError, PebbleError) as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
 
@@ -1127,6 +1221,9 @@ class PebbleShell(cmd.Cmd):
                 argv=list(extra_args),
                 cwd=cwd_value,
                 interpreter=interpreter,
+                ppid=1,
+                pgid=task_id,
+                sid=1,
             )
         return task_id
 
@@ -1142,9 +1239,11 @@ class PebbleShell(cmd.Cmd):
                     task.status = "running"
                     task.interpreter.run_steps(10)
                     task.status = "halted" if task.interpreter.vm_state.halted else "ready"
+                    self._notify_sigchld_for_task(task)
                 except PebbleError as exc:
                     task.status = "error"
                     task.error = str(exc)
+                    self._notify_sigchld_for_task(task)
 
     def _attach_foreground_vm_task(self, task_id: int) -> bool:
         with self._vm_lock:
@@ -1152,6 +1251,7 @@ class PebbleShell(cmd.Cmd):
         if task is None:
             raise PebbleError(f"job {task_id} does not exist")
         task.attached = True
+        self._foreground_pgid = task.pgid
         self._terminal_owner_thread_id = self._main_thread_id
         while True:
             if task.status not in {"halted", "error"}:
@@ -1159,12 +1259,16 @@ class PebbleShell(cmd.Cmd):
                     task.status = "running"
                     task.interpreter.run_steps(5)
                     task.status = "halted" if task.interpreter.vm_state.halted else "ready"
+                    self._notify_sigchld_for_task(task)
                 except PebbleError as exc:
                     task.status = "error"
                     task.error = str(exc)
+                    self._notify_sigchld_for_task(task)
             self._emit_new_vm_output(task)
             if task.status in {"halted", "error"}:
                 task.attached = False
+                if self._foreground_pgid == task.pgid:
+                    self._foreground_pgid = None
                 self._terminal_owner_thread_id = None
                 self._emit_new_vm_output(task)
                 with self._vm_lock:
@@ -1176,7 +1280,10 @@ class PebbleShell(cmd.Cmd):
                 return False
             action = self._poll_foreground_job_action()
             if action == "interrupt":
+                self._emit_signal_event("SIGINT", task.task_id, task.pgid, "vm", "foreground")
                 task.attached = False
+                if self._foreground_pgid == task.pgid:
+                    self._foreground_pgid = None
                 self._terminal_owner_thread_id = None
                 with self._vm_lock:
                     self._vm_tasks.pop(task_id, None)
@@ -1184,7 +1291,10 @@ class PebbleShell(cmd.Cmd):
                 print("[system] program interrupted", flush=True)
                 return False
             if action == "detach":
+                self._emit_signal_event("SIGTSTP", task.task_id, task.pgid, "vm", "foreground")
                 task.attached = False
+                if self._foreground_pgid == task.pgid:
+                    self._foreground_pgid = None
                 self._terminal_owner_thread_id = None
                 return True
             time.sleep(0.02)
@@ -1306,6 +1416,9 @@ class PebbleShell(cmd.Cmd):
                 argv=list(extra_args),
                 exec_mode=exec_mode,
                 cwd=cwd_value,
+                ppid=1,
+                pgid=job_id,
+                sid=1,
             )
             self._jobs[job_id] = job
 
@@ -1329,10 +1442,12 @@ class PebbleShell(cmd.Cmd):
                     else:
                         job.status = "error"
                         job.error = error
+                    self._notify_sigchld_for_job(job)
             except Exception as exc:
                 with self._jobs_lock:
                     job.status = "error"
                     job.error = str(exc)
+                    self._notify_sigchld_for_job(job)
 
         thread = threading.Thread(target=worker, name=f"pebble-job-{job_id}", daemon=True)
         job.thread = thread
@@ -1344,11 +1459,14 @@ class PebbleShell(cmd.Cmd):
             job = self._jobs.get(job_id)
         if job is None:
             raise PebbleError(f"job {job_id} does not exist")
+        self._foreground_pgid = job.pgid
         self._terminal_owner_thread_id = job.thread.ident if job.thread is not None else None
         while True:
             self._emit_new_job_output(job)
             if job.thread is not None and not job.thread.is_alive():
                 self._terminal_owner_thread_id = None
+                if self._foreground_pgid == job.pgid:
+                    self._foreground_pgid = None
                 self._emit_new_job_output(job)
                 with self._jobs_lock:
                     self._jobs.pop(job_id, None)
@@ -1363,9 +1481,15 @@ class PebbleShell(cmd.Cmd):
                 return False
             action = self._poll_foreground_job_action()
             if action == "interrupt":
+                self._emit_signal_event("SIGINT", job.job_id, job.pgid, "host-job", "foreground")
+                if self._foreground_pgid == job.pgid:
+                    self._foreground_pgid = None
                 self._terminal_owner_thread_id = None
                 return False
             if action == "detach":
+                self._emit_signal_event("SIGTSTP", job.job_id, job.pgid, "host-job", "foreground")
+                if self._foreground_pgid == job.pgid:
+                    self._foreground_pgid = None
                 self._terminal_owner_thread_id = None
                 return True
             if job.thread is not None:
@@ -1406,25 +1530,204 @@ class PebbleShell(cmd.Cmd):
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
     def _list_background_jobs(self) -> list[str]:
-        with self._jobs_lock:
-            jobs = [self._jobs[key] for key in sorted(self._jobs)]
+        lines: list[str] = []
+        for record in self._collect_process_records():
+            lines.append(f"[{record.pid}] {record.state} {record.command}")
+        return lines
+
+    def _list_processes(self) -> list[str]:
+        lines: list[str] = []
+        for record in self._collect_process_records():
+            lines.append(
+                f"{record.pid} {record.kind} {record.state} cwd={record.cwd} argv={len(record.argv)} cmd={record.command}"
+            )
+        return lines
+
+    def _collect_process_records(self) -> list[HostProcessRecord]:
+        records: list[HostProcessRecord] = []
         with self._vm_lock:
             vm_tasks = [self._vm_tasks[key] for key in sorted(self._vm_tasks)]
-        lines: list[str] = []
-        for job in jobs:
-            status = job.status
-            if status == "running" and job.thread is not None and not job.thread.is_alive():
-                status = "done"
-                job.status = "done"
-            lines.append(f"[{job.job_id}] {status} {job.command}")
         for task in vm_tasks:
-            status = task.status
+            state = task.status
             if task.attached:
-                status = "foreground"
-            elif status == "ready":
-                status = "running"
-            lines.append(f"[{task.task_id}] {status} {task.command}")
-        return lines
+                state = "foreground"
+            elif state == "ready":
+                state = "running"
+            records.append(
+                HostProcessRecord(
+                    pid=task.task_id,
+                    kind="vm",
+                    state=state,
+                    command=task.command,
+                    program=task.program,
+                    argv=list(task.argv),
+                    cwd=task.cwd,
+                    ppid=task.ppid,
+                    pgid=task.pgid,
+                    sid=task.sid,
+                    attached=task.attached,
+                    exit_status=self._task_exit_status(task),
+                    error=task.error,
+                )
+            )
+        with self._jobs_lock:
+            jobs = [self._jobs[key] for key in sorted(self._jobs)]
+        for job in jobs:
+            state = job.status
+            if state == "running" and job.thread is not None and not job.thread.is_alive():
+                state = "done"
+                job.status = "done"
+            records.append(
+                HostProcessRecord(
+                    pid=job.job_id,
+                    kind="host-job",
+                    state=state,
+                    command=job.command,
+                    program=job.program,
+                    argv=list(job.argv),
+                    cwd=job.cwd,
+                    ppid=job.ppid,
+                    pgid=job.pgid,
+                    sid=job.sid,
+                    exit_status=self._job_exit_status(job, state),
+                    error=job.error,
+                )
+            )
+        return records
+
+    def _child_process_records(self, parent_pid: int) -> list[HostProcessRecord]:
+        children: list[HostProcessRecord] = []
+        for record in self._collect_process_records():
+            if record.ppid == parent_pid:
+                children.append(record)
+        return children
+
+    def _emit_signal_event(self, signal: str, pid: int, pgid: int, kind: str, state: str) -> None:
+        self._pending_signal_events.append(
+            {"signal": signal, "pid": pid, "pgid": pgid, "kind": kind, "state": state}
+        )
+
+    def _notify_sigchld_for_task(self, task: VMTask) -> None:
+        if task.task_id in self._signal_notified_pids:
+            return
+        if task.status not in {"halted", "error"}:
+            return
+        self._signal_notified_pids.add(task.task_id)
+        self._emit_signal_event("SIGCHLD", task.task_id, task.pgid, "vm", task.status)
+
+    def _notify_sigchld_for_job(self, job: BackgroundJob) -> None:
+        if job.job_id in self._signal_notified_pids:
+            return
+        if job.status not in {"done", "interrupted", "error"}:
+            return
+        self._signal_notified_pids.add(job.job_id)
+        self._emit_signal_event("SIGCHLD", job.job_id, job.pgid, "host-job", job.status)
+
+    def _task_exit_status(self, task: VMTask) -> int:
+        if task.status == "error":
+            return 1
+        if task.status == "halted":
+            return 0
+        return -1
+
+    def _job_exit_status(self, job: BackgroundJob, state: str | None = None) -> int:
+        current_state = job.status if state is None else state
+        if current_state == "done":
+            return 0
+        if current_state == "interrupted":
+            return 130
+        if current_state == "error":
+            return 1
+        return -1
+
+    def _process_record_to_dict(self, record: HostProcessRecord) -> dict[str, object]:
+        return {
+            "pid": record.pid,
+            "kind": record.kind,
+            "state": record.state,
+            "command": record.command,
+            "program": record.program,
+            "argv": list(record.argv),
+            "cwd": record.cwd,
+            "ppid": record.ppid,
+            "pgid": record.pgid,
+            "sid": record.sid,
+            "attached": int(record.attached),
+            "exit_status": record.exit_status,
+            "error": "" if record.error is None else record.error,
+        }
+
+    def _wait_process(self, pid: int) -> dict[str, object]:
+        with self._vm_lock:
+            vm_task = self._vm_tasks.get(pid)
+        if vm_task is not None:
+            while vm_task.status not in {"halted", "error"}:
+                time.sleep(0.02)
+                with self._vm_lock:
+                    vm_task = self._vm_tasks.get(pid)
+                if vm_task is None:
+                    raise PebbleError(f"process {pid} does not exist")
+            record = HostProcessRecord(
+                pid=vm_task.task_id,
+                kind="vm",
+                state="error" if vm_task.status == "error" else "done",
+                command=vm_task.command,
+                program=vm_task.program,
+                argv=list(vm_task.argv),
+                cwd=vm_task.cwd,
+                attached=vm_task.attached,
+                exit_status=self._task_exit_status(vm_task),
+                error=vm_task.error,
+            )
+            with self._vm_lock:
+                self._vm_tasks.pop(pid, None)
+            self._signal_notified_pids.discard(pid)
+            return self._process_record_to_dict(record)
+
+        with self._jobs_lock:
+            job = self._jobs.get(pid)
+        if job is None:
+            raise PebbleError(f"process {pid} does not exist")
+        if job.thread is not None and job.thread.is_alive():
+            job.thread.join()
+        state = job.status
+        if state == "running" and job.thread is not None and not job.thread.is_alive():
+            state = "done"
+            job.status = "done"
+        record = HostProcessRecord(
+            pid=job.job_id,
+            kind="host-job",
+            state=state,
+            command=job.command,
+            program=job.program,
+            argv=list(job.argv),
+            cwd=job.cwd,
+            exit_status=self._job_exit_status(job, state),
+            error=job.error,
+        )
+        with self._jobs_lock:
+            self._jobs.pop(pid, None)
+        self._signal_notified_pids.discard(pid)
+        return self._process_record_to_dict(record)
+
+    def _reap_process(self, pid: int) -> dict[str, object]:
+        return self._wait_process(pid)
+
+    def _wait_child_process(self, parent_pid: int) -> dict[str, object]:
+        saw_child = 0
+        while True:
+            children = self._child_process_records(parent_pid)
+            if len(children) > 0:
+                saw_child = 1
+            i = 0
+            while i < len(children):
+                child = children[i]
+                if child.exit_status != -1:
+                    return self._wait_process(child.pid)
+                i = i + 1
+            if saw_child == 0:
+                raise PebbleError(f"process {parent_pid} has no child processes")
+            time.sleep(0.02)
 
     def _foreground_job(self, job_id: int) -> list[str]:
         with self._vm_lock:

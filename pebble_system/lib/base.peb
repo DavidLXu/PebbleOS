@@ -1,0 +1,75 @@
+ERR_OK = 0
+ERR_PERM = 1
+ERR_NOENT = 2
+ERR_IO = 5
+ERR_AGAIN = 11
+ERR_NOMEM = 12
+ERR_BUSY = 16
+ERR_EXIST = 17
+ERR_NOTDIR = 20
+ERR_ISDIR = 21
+ERR_INVAL = 22
+ERR_NOSYS = 38
+
+PROC_STATE_READY = "ready"
+PROC_STATE_RUNNING = "running"
+PROC_STATE_FOREGROUND = "foreground"
+PROC_STATE_DONE = "done"
+PROC_STATE_HALTED = "halted"
+PROC_STATE_ERROR = "error"
+
+SIG_INT = 2
+SIG_TERM = 15
+SIG_CHLD = 17
+SIG_TSTP = 20
+
+DEFAULT_PATH = ["/system/bin", "/bin"]
+DEFAULT_ENV = {"PATH": "/system/bin:/bin", "HOME": "/", "USER": "root", "SHELL": "/system/bin/sh.peb"}
+
+def errno_table():
+    return {"OK": ERR_OK, "PERM": ERR_PERM, "NOENT": ERR_NOENT, "IO": ERR_IO, "AGAIN": ERR_AGAIN, "NOMEM": ERR_NOMEM, "BUSY": ERR_BUSY, "EXIST": ERR_EXIST, "NOTDIR": ERR_NOTDIR, "ISDIR": ERR_ISDIR, "INVAL": ERR_INVAL, "NOSYS": ERR_NOSYS}
+
+def process_state_table():
+    return {"ready": PROC_STATE_READY, "running": PROC_STATE_RUNNING, "foreground": PROC_STATE_FOREGROUND, "done": PROC_STATE_DONE, "halted": PROC_STATE_HALTED, "error": PROC_STATE_ERROR}
+
+def default_env():
+    return {"PATH": DEFAULT_ENV["PATH"], "HOME": DEFAULT_ENV["HOME"], "USER": DEFAULT_ENV["USER"], "SHELL": DEFAULT_ENV["SHELL"]}
+
+def current_env():
+    return default_env()
+
+def split_path_entries(path_text):
+    if len(path_text) == 0:
+        return []
+    out = []
+    current = ""
+    i = 0
+    while i < len(path_text):
+        ch = path_text[i]
+        if ch == ":":
+            append(out, current)
+            current = ""
+        else:
+            current = current + ch
+        i = i + 1
+    append(out, current)
+    return out
+
+def current_path_entries():
+    env = current_env()
+    if has_env_key(env, "PATH"):
+        return split_path_entries(env["PATH"])
+    return DEFAULT_PATH
+
+def has_env_key(env, name):
+    names = keys(env)
+    i = 0
+    while i < len(names):
+        if names[i] == name:
+            return 1
+        i = i + 1
+    return 0
+
+def process_context():
+    env = current_env()
+    return {"pid": 1, "ppid": 0, "pgid": 1, "sid": 1, "cwd": CWD, "argv": [], "env": env, "uid": 0, "gid": 0, "umask": "022", "path": current_path_entries()}

@@ -1,0 +1,28 @@
+import system.lib.base
+
+SYSCALL_FAMILIES = ["fs", "proc", "term", "clock", "memory", "service", "net"]
+
+SYSCALL_TABLE = {"fs.list": "list_files", "fs.exists": "file_exists", "fs.read": "read_file", "fs.write": "write_file", "fs.mkdir": "make_directory", "fs.rmdir": "remove_directory", "fs.cwd": "cwd", "fs.chdir": "chdir", "fs.sync": "sync_filesystem", "proc.run": "run_program", "proc.exec": "exec_program", "proc.spawn_background": "start_background_job", "proc.jobs": "list_background_jobs", "proc.ps": "list_processes", "proc.fg": "foreground_job", "proc.vm_create": "vm_create_task", "proc.vm_step": "vm_step_task", "proc.vm_status": "vm_task_status", "proc.vm_output": "vm_take_task_output", "proc.vm_snapshot": "vm_snapshot_task", "proc.vm_restore": "vm_restore_task", "proc.vm_drop": "vm_drop_task", "term.write": "term_write", "term.flush": "term_flush", "term.clear": "term_clear", "term.move": "term_move", "term.hide_cursor": "term_hide_cursor", "term.show_cursor": "term_show_cursor", "term.read_key": "term_read_key", "term.read_key_timeout": "term_read_key_timeout", "term.rows": "term_rows", "term.cols": "term_cols", "clock.now": "current_time"}
+
+def syscall_families():
+    return SYSCALL_FAMILIES
+
+def syscall_table():
+    return SYSCALL_TABLE
+
+def syscall_lookup(name):
+    if syscall_has_name(name):
+        return SYSCALL_TABLE[name]
+    return ""
+
+def syscall_errno():
+    return system.lib.base.errno_table()
+
+def syscall_has_name(name):
+    names = keys(SYSCALL_TABLE)
+    i = 0
+    while i < len(names):
+        if names[i] == name:
+            return 1
+        i = i + 1
+    return 0

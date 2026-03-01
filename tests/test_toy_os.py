@@ -14,6 +14,15 @@ from pebble_bootloader.fs import FileSystemError, FlatFileSystem
 from pebble_bootloader.lang import PebbleBytecodeInterpreter, PebbleError, PebbleInterpreter
 from pebble_bootloader.shell import build_shell
 
+REPO_ROOT = Path("/Users/xulixin/LX_OS")
+SYSTEM_ROOT = REPO_ROOT / "pebble_system"
+
+
+def resolve_repo_system_path(name: str) -> Path:
+    if name.startswith("system/"):
+        return SYSTEM_ROOT / name[len("system/") :]
+    return REPO_ROOT / name
+
 
 class FlatFileSystemTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -341,6 +350,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_runtime_math_helpers_work_in_pebble(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             }
@@ -364,6 +374,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_import_math_supports_module_style_calls(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             }
@@ -387,6 +398,9 @@ class PebbleInterpreterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             output = PebbleInterpreter(
                 Path(temp_dir),
+                path_resolver=lambda name: resolve_repo_system_path(name)
+                if name.startswith("system/")
+                else Path(temp_dir) / name,
                 host_functions={
                     "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
                     "raw_list_files": lambda args, line: sorted(
@@ -426,6 +440,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_import_memory_module_provides_virtual_ram(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             }
@@ -454,6 +469,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_import_memory_module_supports_block_operations(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             }
@@ -478,6 +494,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_import_memory_module_supports_marks_moves_and_compare(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             }
@@ -508,6 +525,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_import_heap_module_allocates_objects(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             }
@@ -537,6 +555,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_import_heap_module_supports_marks_and_reset(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             }
@@ -586,6 +605,32 @@ class PebbleInterpreterTests(unittest.TestCase):
             )
         self.assertEqual(output, ["9", "14"])
 
+    def test_supports_nested_module_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            nested_dir = Path(temp_dir) / "pkg"
+            nested_dir.mkdir()
+            module_path = nested_dir / "mathish.peb"
+            module_path.write_text(
+                "\n".join(
+                    [
+                        "VALUE = 5",
+                        "def triple(x):",
+                        "    return x * 3",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            output = PebbleInterpreter(Path(temp_dir)).execute(
+                "\n".join(
+                    [
+                        "import pkg.mathish",
+                        "print pkg.mathish.VALUE",
+                        "print pkg.mathish.triple(4)",
+                    ]
+                )
+            )
+        self.assertEqual(output, ["5", "12"])
+
     def test_bytecode_mode_runs_basic_program(self) -> None:
         source = "\n".join(
             [
@@ -615,6 +660,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_bytecode_mode_supports_import_math(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleBytecodeInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             }
@@ -635,6 +681,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_bytecode_mode_supports_import_text_and_random(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleBytecodeInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             }
@@ -657,6 +704,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_bytecode_mode_supports_import_memory(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleBytecodeInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             }
@@ -681,6 +729,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_bytecode_mode_supports_memory_blocks_and_heap(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleBytecodeInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             }
@@ -708,6 +757,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_bytecode_mode_supports_memory_marks_and_heap_reset(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleBytecodeInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
             }
@@ -817,6 +867,32 @@ class PebbleInterpreterTests(unittest.TestCase):
             )
         self.assertEqual(output, ["11", "9"])
 
+    def test_bytecode_mode_supports_nested_module_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            nested_dir = Path(temp_dir) / "pkg"
+            nested_dir.mkdir()
+            module_path = nested_dir / "ops.peb"
+            module_path.write_text(
+                "\n".join(
+                    [
+                        "VALUE = 8",
+                        "def dec(x):",
+                        "    return x - 1",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            output = PebbleBytecodeInterpreter(Path(temp_dir)).execute(
+                "\n".join(
+                    [
+                        "import pkg.ops",
+                        "print pkg.ops.VALUE",
+                        "print pkg.ops.dec(9)",
+                    ]
+                )
+            )
+        self.assertEqual(output, ["8", "8"])
+
     def test_system_nano_runs_with_terminal_bridge(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         nano_source = Path("/Users/xulixin/LX_OS/pebble_system/nano.peb").read_text(encoding="utf-8")
@@ -824,6 +900,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         keys = iter(["^X"])
 
         interpreter = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "term_write": lambda args, line: rendered.append(args[0]) or args[0],
                 "term_flush": lambda args, line: 0,
@@ -857,6 +934,7 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_runtime_exposes_timed_key_reads(self) -> None:
         runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
         interpreter = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
             host_functions={
                 "term_read_key_timeout": lambda args, line: "LEFT",
             },
@@ -866,6 +944,304 @@ class PebbleInterpreterTests(unittest.TestCase):
             initial_globals={"FS_MODE": "hostfs"},
         )
         self.assertEqual(output, ["LEFT"])
+
+    def test_runtime_exports_errno_process_context_and_syscall_inventory(self) -> None:
+        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        interpreter = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
+            host_functions={
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+            },
+        )
+        output = interpreter.execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    'print runtime_errno()["NOENT"]',
+                    'print runtime_process_states()["foreground"]',
+                    'print runtime_process_context()["cwd"]',
+                    'print runtime_syscall_table()["proc.run"]',
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs", "CWD": "/demo"},
+        )
+        self.assertEqual(output, ["2", "foreground", "/demo", "run_program"])
+
+    def test_runtime_exports_process_wait_and_signal_constants(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("wait_runtime_test.peb")
+        target.write_text('print "done"\n', encoding="utf-8")
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+        outputs: list[str]
+
+        try:
+            shell.onecmd("runbg wait_runtime_test.peb")
+            outputs = PebbleInterpreter(
+                shell.fs.root,
+                path_resolver=shell._resolve_user_path_to_host,
+                host_functions=shell._make_runtime(consume_output=False).host_functions,
+            ).execute(
+                runtime_source
+                + "\n"
+                + "\n".join(
+                    [
+                        "result = system.kernel.proc.process_wait(1)",
+                        'print result["exit_status"]',
+                        'print result["kind"]',
+                        'print system.kernel.proc.process_signals()["SIGINT"]',
+                    ]
+                ),
+                initial_globals={
+                    "FS_MODE": "hostfs",
+                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                    "SYSTEM_SHELL_PATH": "system/shell.peb",
+                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+                },
+            )
+        finally:
+            with shell._jobs_lock:
+                for job_id in list(shell._jobs):
+                    shell._jobs.pop(job_id, None)
+            if target.exists():
+                target.unlink()
+
+        self.assertEqual(outputs, ["0", "host-job", "2"])
+
+    def test_process_wait_reaps_completed_background_process(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("wait_reap_test.peb")
+        target.write_text('print "reap"\n', encoding="utf-8")
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+
+        try:
+            shell.onecmd("runbg wait_reap_test.peb")
+            outputs = PebbleInterpreter(
+                shell.fs.root,
+                path_resolver=shell._resolve_user_path_to_host,
+                host_functions=shell._make_runtime(consume_output=False).host_functions,
+            ).execute(
+                runtime_source
+                + "\n"
+                + "\n".join(
+                    [
+                        "result = system.kernel.proc.process_wait(1)",
+                        'print result["exit_status"]',
+                        "snap = system.kernel.proc.process_table_snapshot()",
+                        'print len(snap["processes"])',
+                    ]
+                ),
+                initial_globals={
+                    "FS_MODE": "hostfs",
+                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                    "SYSTEM_SHELL_PATH": "system/shell.peb",
+                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+                },
+            )
+        finally:
+            with shell._jobs_lock:
+                for job_id in list(shell._jobs):
+                    shell._jobs.pop(job_id, None)
+            if target.exists():
+                target.unlink()
+
+        self.assertEqual(outputs, ["0", "0"])
+
+    def test_process_snapshot_exposes_group_and_session_fields(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("group_snapshot_test.peb")
+        target.write_text('print "group"\n', encoding="utf-8")
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+
+        try:
+            shell.onecmd("runbg group_snapshot_test.peb")
+            outputs = PebbleInterpreter(
+                shell.fs.root,
+                path_resolver=shell._resolve_user_path_to_host,
+                host_functions=shell._make_runtime(consume_output=False).host_functions,
+            ).execute(
+                runtime_source
+                + "\n"
+                + "\n".join(
+                    [
+                        "snap = system.kernel.proc.process_table_snapshot()",
+                        'print snap["processes"][0]["ppid"]',
+                        'print snap["processes"][0]["pgid"]',
+                        'print snap["processes"][0]["sid"]',
+                    ]
+                ),
+                initial_globals={
+                    "FS_MODE": "hostfs",
+                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                    "SYSTEM_SHELL_PATH": "system/shell.peb",
+                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+                },
+            )
+        finally:
+            with shell._jobs_lock:
+                for job_id in list(shell._jobs):
+                    shell._jobs.pop(job_id, None)
+            if target.exists():
+                target.unlink()
+
+        self.assertEqual(outputs[0], "1")
+        self.assertEqual(outputs[1], "1")
+        self.assertEqual(outputs[2], "1")
+
+    def test_process_drain_signals_reports_sigchld_for_completed_job(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("sigchld_test.peb")
+        target.write_text('print "sig"\n', encoding="utf-8")
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+
+        try:
+            shell.onecmd("runbg sigchld_test.peb")
+            outputs = PebbleInterpreter(
+                shell.fs.root,
+                path_resolver=shell._resolve_user_path_to_host,
+                host_functions=shell._make_runtime(consume_output=False).host_functions,
+            ).execute(
+                runtime_source
+                + "\n"
+                + "\n".join(
+                    [
+                        "result = system.kernel.proc.process_wait(1)",
+                        'print result["exit_status"]',
+                        "events = system.kernel.proc.process_drain_signals()",
+                        'print events[0]["signal"]',
+                        'print events[0]["pid"]',
+                        'print events[0]["pgid"]',
+                        "again = system.kernel.proc.process_drain_signals()",
+                        "print len(again)",
+                    ]
+                ),
+                initial_globals={
+                    "FS_MODE": "hostfs",
+                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                    "SYSTEM_SHELL_PATH": "system/shell.peb",
+                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+                },
+            )
+        finally:
+            with shell._jobs_lock:
+                for job_id in list(shell._jobs):
+                    shell._jobs.pop(job_id, None)
+            if target.exists():
+                target.unlink()
+
+        self.assertEqual(outputs, ["0", "SIGCHLD", "1", "1", "0"])
+
+    def test_process_snapshot_tracks_children_and_foreground_group(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("fg_group_snapshot_test.peb")
+        target.write_text('i = 0\nwhile i < 50:\n    i = i + 1\nprint "done"\n', encoding="utf-8")
+        actions = iter(["detach"])
+
+        try:
+            with patch("sys.stdin.isatty", return_value=True):
+                with patch.object(shell, "_poll_foreground_job_action", side_effect=lambda: next(actions, None)):
+                    shell.onecmd("run fg_group_snapshot_test.peb")
+            runtime_source = shell.fs.read_file("system/runtime.peb")
+            outputs = PebbleInterpreter(
+                shell.fs.root,
+                path_resolver=shell._resolve_user_path_to_host,
+                host_functions=shell._make_runtime(consume_output=False).host_functions,
+            ).execute(
+                runtime_source
+                + "\n"
+                + "\n".join(
+                    [
+                        "snap = system.kernel.proc.process_table_snapshot()",
+                        'print snap["foreground_pgid"]',
+                        'print len(snap["children"])',
+                        'print snap["children"][0]["ppid"]',
+                        'print snap["children"][0]["pgid"]',
+                    ]
+                ),
+                initial_globals={
+                    "FS_MODE": "hostfs",
+                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                    "SYSTEM_SHELL_PATH": "system/shell.peb",
+                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+                },
+            )
+        finally:
+            if target.exists():
+                target.unlink()
+            with shell._vm_lock:
+                for task_id in list(shell._vm_tasks):
+                    shell._vm_tasks.pop(task_id, None)
+
+        self.assertEqual(outputs, ["0", "1", "1", "1"])
+
+    def test_process_wait_child_reaps_completed_child(self) -> None:
+        shell = build_shell()
+        first = shell.fs.resolve_path("child_one_test.peb")
+        second = shell.fs.resolve_path("child_two_test.peb")
+        first.write_text('print "one"\n', encoding="utf-8")
+        second.write_text('print "two"\n', encoding="utf-8")
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+
+        try:
+            shell.onecmd("runbg child_one_test.peb")
+            shell.onecmd("runbg child_two_test.peb")
+            outputs = PebbleInterpreter(
+                shell.fs.root,
+                path_resolver=shell._resolve_user_path_to_host,
+                host_functions=shell._make_runtime(consume_output=False).host_functions,
+            ).execute(
+                runtime_source
+                + "\n"
+                + "\n".join(
+                    [
+                        "result = system.kernel.proc.process_wait_child(1)",
+                        'print result["ppid"]',
+                        'print result["exit_status"]',
+                        "snap = system.kernel.proc.process_table_snapshot()",
+                        'print len(snap["children"])',
+                    ]
+                ),
+                initial_globals={
+                    "FS_MODE": "hostfs",
+                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                    "SYSTEM_SHELL_PATH": "system/shell.peb",
+                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+                },
+            )
+        finally:
+            if first.exists():
+                first.unlink()
+            if second.exists():
+                second.unlink()
+            with shell._jobs_lock:
+                for job_id in list(shell._jobs):
+                    shell._jobs.pop(job_id, None)
+
+        self.assertEqual(outputs[0], "1")
+        self.assertEqual(outputs[1], "0")
+        self.assertEqual(outputs[2], "1")
+
+    def test_detach_emits_sigtstp_with_foreground_process_group(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("fg_signal_test.peb")
+        target.write_text('i = 0\nwhile i < 50:\n    i = i + 1\nprint "done"\n', encoding="utf-8")
+        actions = iter(["detach"])
+
+        try:
+            with patch("sys.stdin.isatty", return_value=True):
+                with patch.object(shell, "_poll_foreground_job_action", side_effect=lambda: next(actions, None)):
+                    shell.onecmd("run fg_signal_test.peb")
+            events = shell._host_drain_signal_events([], 1)
+        finally:
+            if target.exists():
+                target.unlink()
+            with shell._vm_lock:
+                for task_id in list(shell._vm_tasks):
+                    shell._vm_tasks.pop(task_id, None)
+
+        self.assertEqual(events[0]["signal"], "SIGTSTP")
+        self.assertEqual(events[0]["pid"], 1)
+        self.assertEqual(events[0]["pgid"], 1)
 
 
 class PebbleShellRuntimeTests(unittest.TestCase):
@@ -1106,6 +1482,26 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         self.assertTrue(any("[1] " in line and "runbg /bg_test.peb" in line for line in outputs))
         self.assertIn("job output", outputs)
         self.assertIn("[1] done", outputs)
+
+    def test_ps_lists_vm_and_host_managed_tasks(self) -> None:
+        shell = build_shell()
+        host_target = shell.fs.resolve_path("ps_bg_test.peb")
+        host_target.write_text('print "host job"\n', encoding="utf-8")
+        outputs: list[str] = []
+
+        try:
+            vm_id = shell._create_vm_task("system/count_tick.peb", [], "run")
+            shell.onecmd("runbg ps_bg_test.peb")
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("ps")
+        finally:
+            with shell._vm_lock:
+                shell._vm_tasks.pop(vm_id, None)
+            if host_target.exists():
+                host_target.unlink()
+
+        self.assertTrue(any(" vm " in line and "run /system/count_tick.peb" in line for line in outputs))
+        self.assertTrue(any(" host-job " in line and "runbg /ps_bg_test.peb" in line for line in outputs))
 
     def test_foreground_run_can_detach_into_jobs(self) -> None:
         shell = build_shell()
@@ -1458,6 +1854,50 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(outputs, ["5", "[1]", "7", "[2, 3]"])
+
+    def test_process_table_snapshot_uses_structured_process_records(self) -> None:
+        shell = build_shell()
+        host_target = shell.fs.resolve_path("proc_snapshot_test.peb")
+        host_target.write_text('print "snapshot"\n', encoding="utf-8")
+        runtime_source = shell.fs.read_file("system/runtime.peb")
+
+        try:
+            vm_id = shell._create_vm_task("system/count_tick.peb", [], "run")
+            shell.onecmd("runbg proc_snapshot_test.peb")
+            outputs = PebbleInterpreter(
+                shell.fs.root,
+                path_resolver=shell._resolve_user_path_to_host,
+                host_functions=shell._make_runtime(consume_output=False).host_functions,
+            ).execute(
+                runtime_source
+                + "\n"
+                + "\n".join(
+                    [
+                        "snap = system.kernel.proc.process_table_snapshot()",
+                        "print len(snap[\"processes\"])",
+                        "print snap[\"processes\"][0][\"kind\"]",
+                        "print snap[\"processes\"][0][\"pid\"]",
+                    ]
+                ),
+                initial_globals={
+                    "FS_MODE": "hostfs",
+                    "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+                    "SYSTEM_SHELL_PATH": "system/shell.peb",
+                    "SYSTEM_SHELL_SOURCE": shell.fs.read_file("system/shell.peb"),
+                },
+            )
+        finally:
+            with shell._vm_lock:
+                shell._vm_tasks.pop(vm_id, None)
+            with shell._jobs_lock:
+                for job_id in list(shell._jobs):
+                    shell._jobs.pop(job_id, None)
+            if host_target.exists():
+                host_target.unlink()
+
+        self.assertEqual(outputs[0], "2")
+        self.assertIn(outputs[1], ["vm", "host-job"])
+        self.assertIn(outputs[2], ["1", "2"])
 
 
 

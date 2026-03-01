@@ -1,3 +1,7 @@
+import system.kernel.proc
+import system.kernel.syscall
+import system.lib.base
+
 VFS_BACKING_FILE = ".__pebble_vfs__.db"
 VFS_RUN_SHADOW_FILE = ".__pebble_run_shadow__.peb"
 VFS_NANO_SHADOW_FILE = ".__pebble_nano_shadow__.txt"
@@ -1096,6 +1100,18 @@ def fs_run_uses_shadow():
 
 def cwd():
     return CWD
+
+def runtime_errno():
+    return system.lib.base.errno_table()
+
+def runtime_process_states():
+    return system.lib.base.process_state_table()
+
+def runtime_process_context():
+    return system.kernel.proc.process_context()
+
+def runtime_syscall_table():
+    return system.kernel.syscall.syscall_table()
 
 def chdir(name):
     target = normalize_path(name)

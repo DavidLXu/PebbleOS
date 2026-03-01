@@ -12,6 +12,7 @@ class PebbleError(Exception):
 
 
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+MODULE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 DEF_RE = re.compile(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)\((.*)\):$")
 FOR_RE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+):$")
 ASSIGN_RE = re.compile(r"^(.+?)\s*=(?!=)\s*(.+)$")
@@ -455,7 +456,7 @@ class Parser:
 
         if text.startswith("import "):
             module = text[7:].strip()
-            if not IDENT_RE.match(module):
+            if not MODULE_RE.match(module):
                 raise PebbleError(f"line {line.number}: invalid import target")
             self.index += 1
             return ImportStmt(module=module, line_number=line.number)
@@ -951,7 +952,11 @@ class PebbleInterpreter:
             raise ReturnSignal(self._eval_expr(statement.expr, local_env))
 
         if isinstance(statement, ImportStmt):
-            self._write_variable(statement.module, self._import_module(statement.module, statement.line_number), local_env)
+            self._bind_imported_module(
+                statement.module,
+                self._import_module(statement.module, statement.line_number),
+                local_env,
+            )
             return
 
         raise PebbleError(f"line {statement.line_number}: unknown statement type")
@@ -1357,7 +1362,8 @@ class PebbleInterpreter:
             return module
         if name in self.module_loading:
             raise PebbleError(f"line {line_number}: circular import for module '{name}'")
-        path = self._resolve_file_arg(name + ".peb", line_number)
+        module_path = name.replace(".", "/") + ".peb"
+        path = self._resolve_file_arg(module_path, line_number)
         try:
             source = path.read_text(encoding="utf-8")
         except FileNotFoundError as exc:
@@ -1380,7 +1386,7 @@ class PebbleInterpreter:
         )
         child.module_cache = self.module_cache
         child.module_loading = self.module_loading
-        child.execute(source)
+        child.execute(source, initial_globals=self.globals)
         return ModuleObject(name, {}, child.globals, child.functions)
 
     def _get_module_member(self, target: Value, attr: str, line_number: int) -> Value:
@@ -1448,6 +1454,33 @@ class PebbleInterpreter:
         if name in self.globals:
             return self.globals[name]
         raise PebbleError(f"line {line_number}: unknown variable '{name}'")
+
+    def _bind_imported_module(
+        self,
+        name: str,
+        module: ModuleObject,
+        local_env: dict[str, Value] | None,
+    ) -> None:
+        parts = name.split(".")
+        if len(parts) == 1:
+            self._write_variable(name, module, local_env)
+            return
+        root_name = parts[0]
+        try:
+            current = self._read_variable(root_name, 1, local_env)
+        except PebbleError:
+            current = ModuleObject(root_name, {}, {}, {})
+        if not isinstance(current, ModuleObject):
+            current = ModuleObject(root_name, {}, {}, {})
+        cursor = current
+        for part in parts[1:-1]:
+            child = cursor.values.get(part)
+            if not isinstance(child, ModuleObject):
+                child = ModuleObject(part, {}, {}, {})
+                cursor.values[part] = child
+            cursor = child
+        cursor.values[parts[-1]] = module
+        self._write_variable(root_name, current, local_env)
 
     def _write_variable(self, name: str, value: Value, local_env: dict[str, Value] | None) -> None:
         if local_env is None:
@@ -1790,7 +1823,7 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
                 raise PebbleError(f"line {instr[2]}: return is only allowed inside functions")
             raise ReturnSignal(self._eval_compiled_expr(instr[1], local_env))
         if op == "IMPORT":
-            self._write_variable(instr[1], self._import_module(instr[1], instr[2]), local_env)
+            self._bind_imported_module(instr[1], self._import_module(instr[1], instr[2]), local_env)
             return
         raise PebbleError(f"line {instr[-1]}: unknown bytecode instruction '{op}'")
 
@@ -1920,7 +1953,7 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
                 raise PebbleError(f"line {instr[2]}: return is only allowed inside functions")
             raise ReturnSignal(self._eval_compiled_expr(instr[1], local_env))
         if op == "IMPORT":
-            self._write_variable(instr[1], self._import_module(instr[1], instr[2]), local_env)
+            self._bind_imported_module(instr[1], self._import_module(instr[1], instr[2]), local_env)
             return
         raise PebbleError(f"line {instr[-1]}: unknown bytecode instruction '{op}'")
 

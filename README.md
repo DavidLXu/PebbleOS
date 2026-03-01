@@ -12,6 +12,8 @@ Detailed architecture notes:
 - filesystem: [FILESYSTEM.md](/Users/xulixin/LX_OS/FILESYSTEM.md)
 - memory/runtime: [MEMORY.md](/Users/xulixin/LX_OS/MEMORY.md)
 - language: [LANG.md](/Users/xulixin/LX_OS/LANG.md)
+- ABI: [docs/ABI.md](/Users/xulixin/LX_OS/docs/ABI.md)
+- process model: [docs/PROCESS.md](/Users/xulixin/LX_OS/docs/PROCESS.md)
 
 ## Pebble language
 
@@ -215,6 +217,7 @@ Pebble itself:
 - Pebble terminal programs can poll input with a timeout, which gives Pebble a basic real-time game loop capability
 - the filesystem exposes per-file timestamps so `ls` can show a time for each file
 - Pebble OS supports both direct host files `hostfs` and Pebble-managed virtual filesystems `vfs` through a unified Pebble filesystem layer
+- Pebble language imports now support nested module paths like `system.kernel.proc`, and Pebble OS now has the first kernel-module split for ABI inventory, errno definitions, and process transition wrappers
 
 ### Current meaning of the architecture
 
@@ -258,6 +261,59 @@ moving system behavior into Pebble.
 ### Long-term
 
 - Make Pebble the main place where Pebble OS evolves
+
+## Toward A Working System
+
+From the current bootstrap point, the shortest credible path to a minimum
+working modern system is:
+
+### Stage 1: Observable single-user system
+
+- establish a stable process/task model
+- expose process inspection and lifecycle commands
+- standardize foreground/background semantics
+- keep shell, runtime, and scheduler behavior visible from Pebble
+
+### Stage 2: System service layer
+
+- add standard streams, logging, timers, and event delivery
+- define a stable runtime ABI for apps and services
+- add long-running Pebble services managed by the system
+
+### Stage 3: Isolation and safety
+
+- split tasks into protected process domains
+- define capability or permission boundaries for files, terminal, and services
+- prevent one crashing program from corrupting unrelated tasks
+
+### Stage 4: Program model and packaging
+
+- define executable/module metadata
+- add a package manager and dependency rules
+- support reproducible app loading and versioned runtime interfaces
+
+### Stage 5: Practical OS services
+
+- networking
+- configuration management
+- service management
+- better filesystem metadata and durability
+- debugger, profiler, and better system diagnostics
+
+### Stage 6: Modern usability
+
+- robust TTY behavior with pipes, redirection, and richer job control
+- interactive apps that can detach and reattach cleanly
+- eventually a graphics/windowing layer if Pebble OS grows past terminal-first use
+
+### Current execution step
+
+The current repository has started Stage 1 by adding:
+
+- resumable bytecode VM tasks
+- a Pebble runtime scheduler data model
+- foreground detach to background with `F1`
+- a system-visible `ps` command for process inspection
 - Keep Python as a very small host VM and hardware/terminal bridge
 - Build a stronger self-hosting toolchain in Pebble
 - Move from "Pebble programs running inside the OS" toward "Pebble managing the OS"

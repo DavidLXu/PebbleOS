@@ -1,0 +1,55 @@
+import system.lib.base
+import system.kernel.syscall
+
+def process_context():
+    return system.lib.base.process_context()
+
+def process_states():
+    return system.lib.base.process_state_table()
+
+def process_spawn(program, argv, mode):
+    if mode == "exec":
+        exec_program(program, argv)
+        return 0
+    run_program(program, argv)
+    return 0
+
+def process_spawn_background(program, argv, mode):
+    return start_background_job(program, argv, mode)
+
+def process_jobs():
+    return list_background_jobs()
+
+def process_list():
+    return list_processes()
+
+def process_foreground(job_id):
+    return foreground_job(job_id)
+
+def process_wait(pid):
+    return wait_process(pid)
+
+def process_wait_child(ppid):
+    return wait_child_process(ppid)
+
+def process_reap(pid):
+    return reap_process(pid)
+
+def process_children(ppid):
+    return list_child_processes(ppid)
+
+def process_foreground_group():
+    return current_foreground_pgid()
+
+def process_signals():
+    return {"SIGINT": system.lib.base.SIG_INT, "SIGTERM": system.lib.base.SIG_TERM, "SIGCHLD": system.lib.base.SIG_CHLD, "SIGTSTP": system.lib.base.SIG_TSTP}
+
+def process_pending_signals():
+    return list_signal_events()
+
+def process_drain_signals():
+    return drain_signal_events()
+
+def process_table_snapshot():
+    ctx = process_context()
+    return {"self": {"pid": ctx["pid"], "ppid": ctx["ppid"], "pgid": ctx["pgid"], "sid": ctx["sid"], "state": system.lib.base.PROC_STATE_FOREGROUND, "cwd": ctx["cwd"], "argv": ctx["argv"], "env": ctx["env"], "fds": [0, 1, 2], "exit_status": 0, "signal_mask": []}, "foreground_pgid": process_foreground_group(), "jobs": process_jobs(), "children": process_children(ctx["pid"]), "processes": list_process_records(), "signals": process_signals(), "syscalls": system.kernel.syscall.syscall_families()}
