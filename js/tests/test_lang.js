@@ -194,6 +194,15 @@ test('list index assignment', async () => {
   await assertOutput('x = [1, 2, 3]\nx[1] = 99\nprint x[1]', '99');
 });
 
+test('double-indexed assignment (dict-of-list)', async () => {
+  await assertOutput('d = {"cells": [10, 20, 30]}\nd["cells"][1] = 99\nprint d["cells"][1]', '99');
+});
+
+test('triple-indexed assignment', async () => {
+  const src = 'd = {"tasks": {1: {"status": "old"}}}\nd["tasks"][1]["status"] = "new"\nprint d["tasks"][1]["status"]';
+  await assertOutput(src, 'new');
+});
+
 // ── Dicts ─────────────────────────────────────────────────────────────────────
 
 test('dict literal and key lookup', async () => {

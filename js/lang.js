@@ -512,15 +512,29 @@ class PebbleParser {
     if (/^\w+$/.test(targetText)) {
       return { type: 'NameTarget', name: targetText };
     }
-    // Indexed: name[expr] (possibly nested)
-    const bracketIdx = targetText.indexOf('[');
-    if (bracketIdx > 0 && targetText.endsWith(']')) {
-      const containerText = targetText.slice(0, bracketIdx).trim();
-      const indexText = targetText.slice(bracketIdx + 1, -1).trim();
-      // Container can itself be indexed, so parse it as an expression
-      const containerExpr = parseExpr(containerText, num);
-      const indexExpr = parseExpr(indexText, num);
-      return { type: 'IndexTarget', container: containerExpr, index: indexExpr };
+    // Indexed: name[expr] (possibly nested like a["key"][i])
+    // Find the last outermost '[' by scanning backwards so that
+    // a["cells"][index] splits as container=a["cells"], index=index
+    // rather than at the first '['.
+    if (targetText.endsWith(']')) {
+      let depth = 0;
+      let splitPos = -1;
+      for (let i = targetText.length - 1; i >= 0; i--) {
+        const ch = targetText[i];
+        if (ch === ']') depth++;
+        else if (ch === '[') {
+          depth--;
+          if (depth === 0) { splitPos = i; break; }
+        }
+      }
+      if (splitPos > 0) {
+        const containerText = targetText.slice(0, splitPos).trim();
+        const indexText = targetText.slice(splitPos + 1, -1).trim();
+        // Container can itself be indexed, so parse it as an expression
+        const containerExpr = parseExpr(containerText, num);
+        const indexExpr = parseExpr(indexText, num);
+        return { type: 'IndexTarget', container: containerExpr, index: indexExpr };
+      }
     }
     return null; // not an assignment target
   }
