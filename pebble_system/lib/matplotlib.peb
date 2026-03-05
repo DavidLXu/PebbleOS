@@ -1,0 +1,85 @@
+def _join_lines(lines):
+    out = ""
+    i = 0
+    while i < len(lines):
+        if i > 0:
+            out = out + "\n"
+        out = out + lines[i]
+        i = i + 1
+    return out
+
+def _levels(values, height):
+    min_value = values[0]
+    max_value = values[0]
+    i = 1
+    while i < len(values):
+        value = values[i]
+        if value < min_value:
+            min_value = value
+        if value > max_value:
+            max_value = value
+        i = i + 1
+
+    span = max_value - min_value
+    out = []
+    i = 0
+    while i < len(values):
+        if span == 0:
+            level = int((height - 1) / 2)
+        else:
+            level = int(((values[i] - min_value) * (height - 1)) / span + 0.5)
+        if level < 0:
+            level = 0
+        if level >= height:
+            level = height - 1
+        append(out, level)
+        i = i + 1
+    return {"levels": out, "min": min_value, "max": max_value}
+
+def render(values, height):
+    if len(values) == 0:
+        return "(empty plot)"
+    if height < 2:
+        height = 2
+
+    shape = _levels(values, height)
+    levels = shape["levels"]
+    rows = []
+    row = height - 1
+    while row >= 0:
+        line = ""
+        if row == height - 1:
+            line = "max " + str(shape["max"]) + " | "
+        elif row == 0:
+            line = "min " + str(shape["min"]) + " | "
+        else:
+            line = "      | "
+        i = 0
+        while i < len(levels):
+            if levels[i] == row:
+                line = line + "* "
+            else:
+                line = line + "  "
+            i = i + 1
+        append(rows, line)
+        row = row - 1
+
+    axis = "      +"
+    i = 0
+    while i < len(values):
+        axis = axis + "--"
+        i = i + 1
+    append(rows, axis)
+    append(rows, "      min:" + str(shape["min"]) + " max:" + str(shape["max"]) + " n:" + str(len(values)))
+    return _join_lines(rows)
+
+def plot(values):
+    return render(values, 10)
+
+def show(values):
+    print plot(values)
+    return 0
+
+def show_height(values, height):
+    print render(values, height)
+    return 0

@@ -28,6 +28,7 @@ Pebble currently supports:
 - `import heap`
 - `import numpy` (file module in default Pebble disk)
 - `import torch` (file module in default Pebble disk)
+- `import matplotlib` (file module in default Pebble disk)
 - `pass`
 - `break`
 - `continue`
@@ -126,6 +127,7 @@ Current built-in modules:
 - `heap`: `init`, `capacity`, `used`, `count`, `alloc`, `kind`, `size`, `read`, `write`, `store`, `slice`
 - `numpy` (from `system/lib/numpy.peb`, importable as `import numpy`): `array`, `shape`, `ndim`, `size`, `tolist`, `zeros`, `ones`, `full`, `eye`, `reshape`, `transpose`, `add`, `sub`, `mul`, `div`, `dot`, `matmul`, `sum`
 - `torch` (from `system/lib/torch.peb`, importable as `import torch`): `tensor`, `shape`, `ndim`, `size`, `tolist`, `zeros`, `ones`, `full`, `rand`, `randn`, `reshape`, `transpose`, `add`, `sub`, `mul`, `div`, `dot`, `matmul`, `sum`, `argmax`, `argmax_rows`, `one_hot`, `linear`, `mse_loss`, `mse_grad`, `mean_rows`, `sgd`
+- `matplotlib` (from `system/lib/matplotlib.peb`, importable as `import matplotlib`): `render`, `plot`, `show`, `show_height` for simple text-based plotting
 
 User modules can also be imported from Pebble files in the active filesystem.
 

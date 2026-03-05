@@ -110,7 +110,11 @@ class PebbleShell(cmd.Cmd):
         self.fs = FlatFileSystem(root)
         self.fs_mode = fs_mode
         self.cwd = "/"
-        self.env: dict[str, str] = {"PATH": "/system/bin:/system/sbin:/bin"}
+        self._color_enabled = self._detect_color_support()
+        self.env: dict[str, str] = {
+            "PATH": "/system/bin:/system/sbin:/bin",
+            "PEBBLE_COLOR": "1" if self._color_enabled else "0",
+        }
         self._runtime_env_override: dict[str, str] | None = None
         self.mfs_blob: str | None = None
         self._jobs: dict[int, BackgroundJob] = {}
@@ -509,9 +513,26 @@ class PebbleShell(cmd.Cmd):
             prompt = None
             intro = None
         if isinstance(prompt, str) and prompt:
-            self.prompt = prompt
+            self.prompt = self._format_prompt(prompt)
         if isinstance(intro, str) and intro:
             self.intro = intro
+
+    def _detect_color_support(self) -> bool:
+        if os.environ.get("PEBBLE_COLOR_FORCE") == "1":
+            return True
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            return False
+        if os.environ.get("NO_COLOR"):
+            return False
+        term = os.environ.get("TERM", "")
+        if term == "" or term == "dumb":
+            return False
+        return True
+
+    def _format_prompt(self, prompt: str) -> str:
+        if not self._color_enabled:
+            return prompt
+        return f"\x1b[01;32mpebble@pebble-os\x1b[00m:\x1b[01;34m{self.cwd}\x1b[00m$ "
 
     def _dispatch_runtime_command(
         self, command: str, arg: str | list[str], env_override: dict[str, str] | None = None
@@ -2474,6 +2495,11 @@ class PebbleShell(cmd.Cmd):
                     print("[system] program interrupted", flush=True)
                     return False
                 if len(keys) == 0:
+                    if task.tty_timeout_seconds is not None and len(task.pending_tty_bytes) == 0:
+                        task.pending_keys = [""]
+                        task.tty_timeout_seconds = None
+                        task.status = "ready"
+                        continue
                     task.status = "blocked-tty"
                     continue
                 task.pending_keys = list(keys)

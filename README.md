@@ -9,7 +9,7 @@ This project is a tiny operating system simulator with:
 
 Detailed architecture notes:
 
-- current release: `0.1.1` ([VERSION](VERSION))
+- current release: `0.1.2` ([VERSION](VERSION))
 - changelog: [CHANGELOG.md](CHANGELOG.md)
 - release/versioning policy: [docs/VERSIONING.md](docs/VERSIONING.md)
 - filesystem: [FILESYSTEM.md](FILESYSTEM.md)
@@ -20,6 +20,7 @@ Detailed architecture notes:
 - launcher semantics: [docs/LAUNCHER.md](docs/LAUNCHER.md)
 - shell/login semantics: [docs/SHELL_LOGIN.md](docs/SHELL_LOGIN.md)
 - tty/input semantics: [docs/TTY_INPUT.md](docs/TTY_INPUT.md)
+- physics simulator usage: [docs/PHYSICS_SIMULATOR.md](docs/PHYSICS_SIMULATOR.md)
 - Pebble vs Python 3.x language gaps: [docs/PEBBLE_LANGUAGE_GAPS.md](docs/PEBBLE_LANGUAGE_GAPS.md)
 
 ## Pebble language
@@ -220,9 +221,14 @@ That preparation phase added:
 - added a Pebble-native `torch`-style module (`import torch`) with tensor ops and SGD helpers, plus an `mnist_train.peb` demo that trains a tiny MNIST-like digit classifier in Pebble userland
 - changed `pebble` so running it without arguments opens an interactive Pebble REPL, while `pebble FILE [ARGS...]` still runs scripts
 - Pebble language now supports `class` definitions in both interpreter and bytecode modes, including instance methods, `__init__` constructors, and bound method values
-- established formal release/version management for the repo and runtime, with `VERSION`, `CHANGELOG.md`, `docs/VERSIONING.md`, runtime version constants, and a Pebble `version` command aligned to release `0.1.1`
+- established formal release/version management for the repo and runtime, with `VERSION`, `CHANGELOG.md`, `docs/VERSIONING.md`, runtime version constants, and a Pebble `version` command aligned to release `0.1.2`
 - top-level module imports now auto-resolve `numpy` and `torch` from `system/lib`, so `import numpy` / `import torch` work without wrapper files in the user disk
 - fixed `pebble` REPL evaluation state so definitions now persist across input lines (`a=1` then `print a` works in the same REPL session)
+- improved shell UX with Ubuntu-style colored prompt in interactive terminals and colorized `ls` output to distinguish directories and regular files
+- added a Pebble-native text plotting module (`import matplotlib`) and a `gnuplot` CLI command that renders simple ASCII charts from args, files, or piped stdin
+- added an interactive Pebble `physics` sandbox command with 2D text rendering, configurable gravity/air drag, object collisions, and region materials (`air`, `liquid`, `solid`)
+- fixed `physics` state loss in interactive terminal re-entry paths by persisting world/object state between input cycles, so sequential commands keep previously added objects and filled materials
+- `ls` now also shows human-readable sizes for both files and directories by default, alongside each entry's timestamp and name
 
 This is the current transition point: PebbleOS is no longer just a bootstrap
 demo, but it is not yet a full modern system either. It now has enough

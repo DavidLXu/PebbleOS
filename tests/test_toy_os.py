@@ -575,7 +575,7 @@ class PebbleInterpreterTests(unittest.TestCase):
             ),
             initial_globals={"FS_MODE": "hostfs"},
         )
-        self.assertEqual(output, ["0.1.0", "Pebble OS 0.1.0"])
+        self.assertEqual(output, ["0.1.2", "Pebble OS 0.1.2"])
 
     def test_version_and_uname_commands_report_current_release(self) -> None:
         runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
@@ -591,7 +591,7 @@ class PebbleInterpreterTests(unittest.TestCase):
             runtime_source + "\n" + version_source,
             initial_globals={"FS_MODE": "hostfs", "ARGV": [], "ARGC": 0},
         )
-        self.assertEqual(version_out, ["0.1.0"])
+        self.assertEqual(version_out, ["0.1.2"])
         uname_out = PebbleInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions=host_functions,
@@ -599,7 +599,7 @@ class PebbleInterpreterTests(unittest.TestCase):
             runtime_source + "\n" + uname_source,
             initial_globals={"FS_MODE": "hostfs", "ARGV": ["-r"], "ARGC": 1},
         )
-        self.assertEqual(uname_out, ["0.1.0"])
+        self.assertEqual(uname_out, ["0.1.2"])
 
     def test_import_memory_module_provides_virtual_ram(self) -> None:
         runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
@@ -937,6 +937,25 @@ class PebbleInterpreterTests(unittest.TestCase):
                 )
             )
         self.assertEqual(output, ["6", "[3]"])
+
+    def test_import_matplotlib_resolves_from_system_lib_without_disk_shims(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = PebbleInterpreter(
+                Path(temp_dir),
+                path_resolver=lambda name: resolve_repo_system_path(name)
+                if name.startswith("system/")
+                else Path(temp_dir) / name,
+            ).execute(
+                "\n".join(
+                    [
+                        "import matplotlib",
+                        "print matplotlib.plot([1, 3, 2])",
+                    ]
+                )
+            )
+        self.assertEqual(len(output), 1)
+        self.assertIn("*", output[0])
+        self.assertIn("min:", output[0])
 
     def test_bytecode_mode_supports_import_memory(self) -> None:
         runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
@@ -1656,7 +1675,7 @@ class PebbleShellSmokeTests(unittest.TestCase):
             shell.onecmd("ls")
         self.assertIn("/dev", outputs)
         self.assertTrue(any("/dev/tty" in line for line in outputs))
-        self.assertTrue(any("tty" == line or line.endswith("  tty") for line in outputs))
+        self.assertTrue(any("tty" in line and "/dev/tty" not in line for line in outputs))
 
     def test_tty_command_reports_device_state(self) -> None:
         shell = build_shell()
@@ -2184,6 +2203,23 @@ class PebbleShellRuntimeTests(unittest.TestCase):
 
         self.assertIn("gcc: wrote mini.peb", outputs)
         self.assertIn("11", outputs)
+
+    def test_gnuplot_renders_ascii_chart_from_file(self) -> None:
+        shell = build_shell()
+        source = shell.fs.resolve_path("plot.txt")
+        source.write_text("1\n4\n2\n6\n3\n", encoding="utf-8")
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("gnuplot plot.txt")
+        finally:
+            if source.exists():
+                source.unlink()
+
+        self.assertEqual(len(outputs), 1)
+        self.assertIn("*", outputs[0])
+        self.assertIn("min:", outputs[0])
+        self.assertIn("max:", outputs[0])
 
     def test_wc_counts_file_contents(self) -> None:
         shell = build_shell()
@@ -2891,7 +2927,35 @@ class PebbleShellRuntimeTests(unittest.TestCase):
             if target.exists():
                 target.unlink()
 
-        self.assertTrue(any(line.endswith("  ls_time_test.txt") for line in outputs))
+        self.assertTrue(any(line.endswith("\tls_time_test.txt") for line in outputs))
+        self.assertTrue(any("\t0B\tls_time_test.txt" in line for line in outputs))
+
+    def test_runtime_ls_shows_human_readable_sizes_for_files_and_directories(self) -> None:
+        shell = build_shell()
+        big_file = shell.fs.resolve_path("ls_size_big.txt")
+        nested_file = shell.fs.resolve_path("ls_size_dir/child.txt")
+        outputs: list[str] = []
+        try:
+            shell.onecmd("touch ls_size_big.txt")
+            shell.onecmd("touch ls_size_dir/child.txt")
+            big_file.write_text("x" * 1536, encoding="utf-8")
+            nested_file.write_text("abc", encoding="utf-8")
+            with patch(
+                "builtins.print",
+                side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+            ):
+                shell.onecmd("ls")
+        finally:
+            if big_file.exists():
+                big_file.unlink()
+            if nested_file.exists():
+                nested_file.unlink()
+            parent = shell.fs.resolve_path("ls_size_dir")
+            if parent.exists():
+                parent.rmdir()
+
+        self.assertTrue(any("\t1.5KB\tls_size_big.txt" in line for line in outputs))
+        self.assertTrue(any("\t3B\tls_size_dir" in line for line in outputs))
 
     def test_root_ls_shows_only_direct_children(self) -> None:
         shell = build_shell()
@@ -2907,7 +2971,7 @@ class PebbleShellRuntimeTests(unittest.TestCase):
             parent = shell.fs.resolve_path("nested_ls_dir")
             if parent.exists():
                 parent.rmdir()
-        self.assertTrue(any(line.endswith("  nested_ls_dir") for line in outputs))
+        self.assertTrue(any(line.endswith("\tnested_ls_dir") for line in outputs))
         self.assertFalse(any("nested_ls_dir/child.txt" in line for line in outputs))
 
     def test_tree_lists_recursive_structure_from_current_directory(self) -> None:
@@ -2991,6 +3055,42 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         target_call = mock_run.call_args_list[1]
         self.assertEqual(target_call.args[0], "interp_test.peb")
         self.assertEqual(target_call.kwargs.get("exec_mode"), "interp")
+
+    def test_physics_fill_preserves_object_and_previous_materials(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        replies = iter(
+            [
+                "add ball 5 2 1 0 1 o",
+                "fill 0 12 39 15 solid",
+                "fill 12 8 28 11 liquid",
+                "show",
+                "quit",
+            ]
+        )
+
+        def fake_input(prompt: str = "") -> str:
+            return next(replies)
+
+        with patch("builtins.input", side_effect=fake_input):
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("physics")
+
+        last_tick_index = -1
+        i = len(outputs) - 1
+        while i >= 0:
+            if outputs[i].startswith("tick="):
+                last_tick_index = i
+                break
+            i = i - 1
+        self.assertNotEqual(last_tick_index, -1)
+        window_start = last_tick_index - 30
+        if window_start < 0:
+            window_start = 0
+        final_window = outputs[window_start : last_tick_index + 1]
+        self.assertTrue(any("o" in line for line in final_window))
+        self.assertTrue(any("~~~~~~~~~~~~~~~~~" in line for line in final_window))
+        self.assertTrue(any("########################################" in line for line in final_window))
 
     def test_runtime_boot_identifies_memory_filesystem(self) -> None:
         shell = build_shell(fs_mode="mfs")

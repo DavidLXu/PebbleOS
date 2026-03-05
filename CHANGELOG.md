@@ -4,6 +4,16 @@ All notable changes to PebbleOS are documented in this file.
 
 Versioning policy: [docs/VERSIONING.md](docs/VERSIONING.md)
 
+## [0.1.2] - 2026-03-06
+
+Maintenance release focused on simulator and shell/runtime quality improvements.
+
+- Updated version metadata to `0.1.2` across repository and runtime-visible APIs.
+- Added interactive `physics` command (`system/bin/physics.peb`) with 2D text rendering, gravity/drag tuning, object collisions, and `air`/`liquid`/`solid` material regions.
+- Fixed `physics` interactive state loss by persisting simulator world/object state between input cycles.
+- Added detailed physics simulator documentation (`docs/PHYSICS_SIMULATOR.md`) including command grammar, mechanics, examples, and text screenshots.
+- Included related shell/help and regression test updates for recent runtime features.
+
 ## [0.1.1] - 2026-03-06
 
 Maintenance release that consolidates pending PebbleOS runtime, shell, userland,

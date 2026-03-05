@@ -16,8 +16,45 @@ def first_path_part(name):
         i = i + 1
     return out
 
-def current_entry_names():
-    names = list_files()
+def starts_with(text_value, prefix):
+    if len(prefix) > len(text_value):
+        return 0
+    i = 0
+    while i < len(prefix):
+        if text_value[i] != prefix[i]:
+            return 0
+        i = i + 1
+    return 1
+
+def is_directory_entry_from_names(entry, names):
+    prefix = entry + "/"
+    i = 0
+    while i < len(names):
+        if starts_with(names[i], prefix):
+            return 1
+        i = i + 1
+    return 0
+
+def is_directory_entry(entry):
+    return is_directory_entry_from_names(entry, list_files())
+
+def color_enabled():
+    names = keys(ENV)
+    i = 0
+    while i < len(names):
+        if names[i] == "PEBBLE_COLOR":
+            return ENV["PEBBLE_COLOR"] == "1"
+        i = i + 1
+    return 0
+
+def colorize_name(name, is_dir):
+    if color_enabled() == 0:
+        return name
+    if is_dir:
+        return "\u001b[01;34m" + name + "\u001b[00m"
+    return "\u001b[00;90m" + name + "\u001b[00m"
+
+def current_entry_names_from(names):
     entries = []
     i = 0
     while i < len(names):
@@ -27,19 +64,63 @@ def current_entry_names():
         i = i + 1
     return entries
 
+def current_entry_names():
+    return current_entry_names_from(list_files())
+
 def entry_time(name):
     if file_exists(name):
         return file_time(name)
     return current_time()
 
+def safe_file_size(name):
+    try:
+        return len(read_file(name))
+    except:
+        return 0
+
+def entry_size_from_names(name, names):
+    if file_exists(name):
+        return safe_file_size(name)
+    if is_directory_entry_from_names(name, names):
+        prefix = name + "/"
+        total = 0
+        i = 0
+        while i < len(names):
+            child = names[i]
+            if starts_with(child, prefix) and file_exists(child):
+                total = total + safe_file_size(child)
+            i = i + 1
+        return total
+    return 0
+
+def format_scaled_size(value, unit, suffix):
+    scaled10 = int((value * 10) / unit)
+    whole = int(scaled10 / 10)
+    frac = scaled10 - whole * 10
+    if whole >= 100:
+        return str(whole) + suffix
+    return str(whole) + "." + str(frac) + suffix
+
+def format_human_size(size):
+    if size < 1024:
+        return str(size) + "B"
+    if size < 1048576:
+        return format_scaled_size(size, 1024, "KB")
+    if size < 1073741824:
+        return format_scaled_size(size, 1048576, "MB")
+    return format_scaled_size(size, 1073741824, "GB")
+
 if ARGC != 0:
     print "this command does not take arguments"
 else:
-    entries = current_entry_names()
+    names = list_files()
+    entries = current_entry_names_from(names)
     if len(entries) == 0:
         print "(empty)"
     else:
         i = 0
         while i < len(entries):
-            print entry_time(entries[i]) + "  " + entries[i]
+            entry = entries[i]
+            size_text = format_human_size(entry_size_from_names(entry, names))
+            print entry_time(entry) + "\t" + size_text + "\t" + colorize_name(entry, is_directory_entry_from_names(entry, names))
             i = i + 1

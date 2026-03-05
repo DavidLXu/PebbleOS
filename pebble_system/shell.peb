@@ -64,10 +64,10 @@ def command_help(args):
         print "  preferred run   COMMAND [ARGS...] or COMMAND &"
         print "  external tools  ls, pwd, mkdir, rmdir, time, sync, touch"
         print "                  edit, cat, head, tail, rm, cp, mv, stat, cmp, tee"
-        print "                  echo, wc, lang, gcc, env, which, find, grep, sort, uniq"
+        print "                  echo, wc, lang, gcc, gnuplot, env, which, find, grep, sort, uniq"
         print "                  kill, top, htop, ps, sh, bash, tty, tree"
         print "                  test, expr, dirname, basename, true, false, yes"
-        print "                  date, hostname, uname, version, sleep, du"
+        print "                  date, hostname, uname, version, sleep, du, physics"
         print "                  from PATH: " + current_path()
         print "  cmd &           run external commands and Pebble programs in background"
         print "  >, >>, <        shell redirection for single commands"
@@ -136,6 +136,9 @@ def command_help(args):
     elif topic == "rm":
         print "rm FILE [FILE ...]"
         print "remove one or more files; continues deleting even if one file fails"
+    elif topic == "physics":
+        print "physics"
+        print "start the interactive 2D text physics simulator"
     elif topic == "exit":
         print "exit"
         print "leave Pebble OS"

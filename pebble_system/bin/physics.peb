@@ -1,0 +1,489 @@
+def make_grid(width, height, fill):
+    rows = []
+    y = 0
+    while y < height:
+        row = []
+        x = 0
+        while x < width:
+            append(row, fill)
+            x = x + 1
+        append(rows, row)
+        y = y + 1
+    return rows
+
+def default_materials():
+    return {"air": {"drag": 0.02, "bounce": 0.85, "buoyancy": 0.0}, "liquid": {"drag": 0.30, "bounce": 0.35, "buoyancy": 0.65}, "solid": {"drag": 0.00, "bounce": 0.50, "buoyancy": 0.0}}
+
+def new_world():
+    width = 40
+    height = 16
+    return {"width": width, "height": height, "gravity": 0.18, "air_drag": 0.01, "tick": 0, "materials": default_materials(), "cells": make_grid(width, height, "air")}
+
+def split_words(text):
+    words = []
+    current = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == " " or ch == "\t":
+            if len(current) > 0:
+                append(words, current)
+                current = ""
+        else:
+            current = current + ch
+        i = i + 1
+    if len(current) > 0:
+        append(words, current)
+    return words
+
+def split_by(text, delimiter):
+    parts = []
+    current = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == delimiter:
+            append(parts, current)
+            current = ""
+        else:
+            current = current + ch
+        i = i + 1
+    append(parts, current)
+    return parts
+
+def material_char(name):
+    if name == "solid":
+        return "#"
+    if name == "liquid":
+        return "~"
+    return "."
+
+def object_char_at(objects, x, y):
+    i = 0
+    while i < len(objects):
+        obj = objects[i]
+        ox = int(obj["x"])
+        oy = int(obj["y"])
+        if ox == x and oy == y:
+            return obj["glyph"]
+        i = i + 1
+    return ""
+
+def render(world, objects):
+    border = "+" + repeat_text("-", world["width"]) + "+"
+    print border
+    y = 0
+    while y < world["height"]:
+        line = "|"
+        x = 0
+        while x < world["width"]:
+            ch = material_char(world["cells"][y][x])
+            marker = object_char_at(objects, x, y)
+            if marker != "":
+                ch = marker
+            line = line + ch
+            x = x + 1
+        print line + "|"
+        y = y + 1
+    print border
+    print "tick=" + str(world["tick"]) + " gravity=" + str(world["gravity"]) + " air=" + str(world["air_drag"]) + " objects=" + str(len(objects))
+
+def material_at(world, x, y):
+    if x < 0 or y < 0:
+        return "solid"
+    if x >= world["width"] or y >= world["height"]:
+        return "solid"
+    return world["cells"][y][x]
+
+PHYSICS_STATE_FILE = ".__physics_state__.txt"
+
+def material_name_from_char(ch):
+    if ch == "#":
+        return "solid"
+    if ch == "~":
+        return "liquid"
+    return "air"
+
+def encode_cell_row(world, y):
+    text = ""
+    x = 0
+    while x < world["width"]:
+        text = text + material_char(world["cells"][y][x])
+        x = x + 1
+    return text
+
+def decode_cell_row(text, width):
+    row = []
+    x = 0
+    while x < width:
+        if x < len(text):
+            append(row, material_name_from_char(text[x]))
+        else:
+            append(row, "air")
+        x = x + 1
+    return row
+
+def save_state(world, objects):
+    lines = []
+    append(lines, str(world["width"]))
+    append(lines, str(world["height"]))
+    append(lines, str(world["gravity"]))
+    append(lines, str(world["air_drag"]))
+    append(lines, str(world["tick"]))
+    y = 0
+    while y < world["height"]:
+        append(lines, encode_cell_row(world, y))
+        y = y + 1
+    append(lines, str(len(objects)))
+    i = 0
+    while i < len(objects):
+        obj = objects[i]
+        append(lines, obj["name"] + "|" + str(obj["x"]) + "|" + str(obj["y"]) + "|" + str(obj["vx"]) + "|" + str(obj["vy"]) + "|" + str(obj["mass"]) + "|" + obj["glyph"])
+        i = i + 1
+    write_file(PHYSICS_STATE_FILE, join_lines(lines))
+
+def load_state():
+    if file_exists(PHYSICS_STATE_FILE) == 0:
+        return {"world": new_world(), "objects": [], "loaded": 0}
+    try:
+        lines = split_lines(read_file(PHYSICS_STATE_FILE))
+        if len(lines) < 6:
+            return {"world": new_world(), "objects": [], "loaded": 0}
+        width = int(lines[0])
+        height = int(lines[1])
+        world = {"width": width, "height": height, "gravity": float(lines[2]), "air_drag": float(lines[3]), "tick": int(lines[4]), "materials": default_materials(), "cells": make_grid(width, height, "air")}
+        line_index = 5
+        y = 0
+        while y < height and line_index < len(lines):
+            world["cells"][y] = decode_cell_row(lines[line_index], width)
+            y = y + 1
+            line_index = line_index + 1
+        objects = []
+        if line_index < len(lines):
+            object_count = int(lines[line_index])
+            line_index = line_index + 1
+            i = 0
+            while i < object_count and line_index < len(lines):
+                parts = split_by(lines[line_index], "|")
+                if len(parts) >= 7:
+                    append(objects, {"name": parts[0], "x": float(parts[1]), "y": float(parts[2]), "vx": float(parts[3]), "vy": float(parts[4]), "mass": float(parts[5]), "glyph": parts[6]})
+                i = i + 1
+                line_index = line_index + 1
+        return {"world": world, "objects": objects, "loaded": 1}
+    except:
+        return {"world": new_world(), "objects": [], "loaded": 0}
+
+def clear_state():
+    if file_exists(PHYSICS_STATE_FILE):
+        delete_file(PHYSICS_STATE_FILE)
+
+def step(world, objects, count):
+    tick_index = 0
+    while tick_index < count:
+        i = 0
+        while i < len(objects):
+            obj = objects[i]
+            old_x = obj["x"]
+            old_y = obj["y"]
+
+            current_name = material_at(world, int(obj["x"]), int(obj["y"]))
+            current = world["materials"][current_name]
+            drag = world["air_drag"] + current["drag"]
+            if drag < 0:
+                drag = 0
+            if drag > 0.95:
+                drag = 0.95
+
+            mass = obj["mass"]
+            if mass < 0.1:
+                mass = 0.1
+
+            obj["vy"] = obj["vy"] + world["gravity"] - current["buoyancy"] / mass
+            obj["vx"] = obj["vx"] * (1.0 - drag)
+            obj["vy"] = obj["vy"] * (1.0 - drag)
+            obj["x"] = obj["x"] + obj["vx"]
+            obj["y"] = obj["y"] + obj["vy"]
+
+            if obj["x"] < 0:
+                obj["x"] = 0
+                obj["vx"] = 0 - obj["vx"] * 0.6
+            if obj["y"] < 0:
+                obj["y"] = 0
+                obj["vy"] = 0 - obj["vy"] * 0.6
+            max_x = world["width"] - 1
+            max_y = world["height"] - 1
+            if obj["x"] > max_x:
+                obj["x"] = max_x
+                obj["vx"] = 0 - obj["vx"] * 0.6
+            if obj["y"] > max_y:
+                obj["y"] = max_y
+                obj["vy"] = 0 - obj["vy"] * 0.6
+
+            next_name = material_at(world, int(obj["x"]), int(obj["y"]))
+            if next_name == "solid":
+                bounce = world["materials"]["solid"]["bounce"]
+                obj["x"] = old_x
+                obj["y"] = old_y
+                obj["vx"] = 0 - obj["vx"] * bounce
+                obj["vy"] = 0 - obj["vy"] * bounce
+            objects[i] = obj
+            i = i + 1
+
+        left_i = 0
+        while left_i < len(objects):
+            right_i = left_i + 1
+            while right_i < len(objects):
+                left = objects[left_i]
+                right = objects[right_i]
+                dx = abs(left["x"] - right["x"])
+                dy = abs(left["y"] - right["y"])
+                if dx <= 0.9 and dy <= 0.9:
+                    l_vx = left["vx"]
+                    l_vy = left["vy"]
+                    r_vx = right["vx"]
+                    r_vy = right["vy"]
+                    left["vx"] = r_vx * 0.8
+                    left["vy"] = r_vy * 0.8
+                    right["vx"] = l_vx * 0.8
+                    right["vy"] = l_vy * 0.8
+                    if left["x"] <= right["x"]:
+                        left["x"] = left["x"] - 0.2
+                        right["x"] = right["x"] + 0.2
+                    else:
+                        left["x"] = left["x"] + 0.2
+                        right["x"] = right["x"] - 0.2
+                    objects[left_i] = left
+                    objects[right_i] = right
+                right_i = right_i + 1
+            left_i = left_i + 1
+
+        world["tick"] = world["tick"] + 1
+        tick_index = tick_index + 1
+    return {"world": world, "objects": objects}
+
+def find_object_index(objects, name):
+    i = 0
+    while i < len(objects):
+        if objects[i]["name"] == name:
+            return i
+        i = i + 1
+    return -1
+
+def add_object(objects, words):
+    if len(words) < 4:
+        print "usage: add NAME X Y [VX VY MASS GLYPH]"
+        return {"ok": 0, "objects": objects}
+
+    name = words[1]
+    if find_object_index(objects, name) >= 0:
+        print "object already exists: " + name
+        return {"ok": 0, "objects": objects}
+
+    vx = 0.0
+    vy = 0.0
+    mass = 1.0
+    glyph = "o"
+    if len(name) > 0:
+        glyph = name[0]
+
+    if len(words) >= 6:
+        vx = float(words[4])
+        vy = float(words[5])
+    if len(words) >= 7:
+        mass = float(words[6])
+    if len(words) >= 8 and len(words[7]) > 0:
+        glyph = words[7][0]
+
+    out = []
+    i = 0
+    while i < len(objects):
+        append(out, objects[i])
+        i = i + 1
+    append(out, {"name": name, "x": float(words[2]), "y": float(words[3]), "vx": vx, "vy": vy, "mass": mass, "glyph": glyph})
+    print "added " + name
+    return {"ok": 1, "objects": out}
+
+def remove_object(objects, name):
+    idx = find_object_index(objects, name)
+    if idx < 0:
+        print "object not found: " + name
+        return {"ok": 0, "objects": objects}
+    out = []
+    i = 0
+    while i < len(objects):
+        if i != idx:
+            append(out, objects[i])
+        i = i + 1
+    print "removed " + name
+    return {"ok": 1, "objects": out}
+
+def fill_region(world, words):
+    if len(words) != 6:
+        print "usage: fill X1 Y1 X2 Y2 MATERIAL"
+        return {"ok": 0, "world": world}
+    material = words[5]
+    if dict_has_key(world["materials"], material) == 0:
+        print "unknown material: " + material
+        return {"ok": 0, "world": world}
+
+    x1 = int(words[1])
+    y1 = int(words[2])
+    x2 = int(words[3])
+    y2 = int(words[4])
+
+    if x2 < x1:
+        temp = x1
+        x1 = x2
+        x2 = temp
+    if y2 < y1:
+        temp = y1
+        y1 = y2
+        y2 = temp
+
+    y = y1
+    while y <= y2:
+        x = x1
+        while x <= x2:
+            if x >= 0 and y >= 0 and x < world["width"] and y < world["height"]:
+                world["cells"][y][x] = material
+            x = x + 1
+        y = y + 1
+    print "filled region with " + material
+    return {"ok": 1, "world": world}
+
+def resize_world(world, words):
+    if len(words) != 3:
+        print "usage: size WIDTH HEIGHT"
+        return {"ok": 0, "world": world}
+    width = int(words[1])
+    height = int(words[2])
+    if width < 8 or height < 6:
+        print "minimum size is 8x6"
+        return {"ok": 0, "world": world}
+    if width > 120 or height > 40:
+        print "maximum size is 120x40"
+        return {"ok": 0, "world": world}
+    world["width"] = width
+    world["height"] = height
+    world["cells"] = make_grid(width, height, "air")
+    world["tick"] = 0
+    print "resized world to " + str(width) + "x" + str(height)
+    return {"ok": 1, "world": world}
+
+def list_objects(objects):
+    if len(objects) == 0:
+        print "(no objects)"
+        return 0
+    i = 0
+    while i < len(objects):
+        obj = objects[i]
+        print obj["name"] + " pos=(" + str(obj["x"]) + "," + str(obj["y"]) + ") vel=(" + str(obj["vx"]) + "," + str(obj["vy"]) + ") mass=" + str(obj["mass"]) + " glyph=" + obj["glyph"]
+        i = i + 1
+    return len(objects)
+
+def print_help():
+    print "physics: 2D text-based physics sandbox"
+    print "commands:"
+    print "  help"
+    print "  show"
+    print "  step [N]"
+    print "  run N"
+    print "  add NAME X Y [VX VY MASS GLYPH]"
+    print "  rm NAME"
+    print "  list"
+    print "  gravity VALUE"
+    print "  air VALUE"
+    print "  fill X1 Y1 X2 Y2 air|liquid|solid"
+    print "  size WIDTH HEIGHT"
+    print "  clearobjects"
+    print "  reset"
+    print "  quit"
+
+def main_loop():
+    state = load_state()
+    world = state["world"]
+    objects = state["objects"]
+
+    if state["loaded"] == 0:
+        print "Physics simulator (2D text)"
+        print "materials: air, liquid, solid"
+        print "type 'help' for commands"
+        render(world, objects)
+
+    while 1:
+        line = input("physics> ")
+        words = split_words(line)
+        if len(words) == 0:
+            continue
+
+        cmd = words[0]
+        if cmd == "quit" or cmd == "exit":
+            clear_state()
+            return 0
+        elif cmd == "help":
+            print_help()
+        elif cmd == "show":
+            render(world, objects)
+        elif cmd == "step" or cmd == "run":
+            count = 1
+            if len(words) >= 2:
+                count = int(words[1])
+            if count < 1:
+                count = 1
+            if count > 500:
+                count = 500
+            result = step(world, objects, count)
+            world = result["world"]
+            objects = result["objects"]
+            render(world, objects)
+        elif cmd == "add":
+            result = add_object(objects, words)
+            if result["ok"]:
+                objects = result["objects"]
+                render(world, objects)
+        elif cmd == "rm":
+            if len(words) != 2:
+                print "usage: rm NAME"
+            else:
+                result = remove_object(objects, words[1])
+                if result["ok"]:
+                    objects = result["objects"]
+                    render(world, objects)
+        elif cmd == "list":
+            list_objects(objects)
+        elif cmd == "gravity":
+            if len(words) != 2:
+                print "usage: gravity VALUE"
+            else:
+                world["gravity"] = float(words[1])
+                print "gravity=" + str(world["gravity"])
+        elif cmd == "air":
+            if len(words) != 2:
+                print "usage: air VALUE"
+            else:
+                world["air_drag"] = float(words[1])
+                print "air=" + str(world["air_drag"])
+        elif cmd == "fill":
+            result = fill_region(world, words)
+            if result["ok"]:
+                world = result["world"]
+                render(world, objects)
+        elif cmd == "size":
+            result = resize_world(world, words)
+            if result["ok"]:
+                world = result["world"]
+                render(world, objects)
+        elif cmd == "clearobjects":
+            objects = []
+            print "objects cleared"
+            render(world, objects)
+        elif cmd == "reset":
+            world = new_world()
+            objects = []
+            print "world reset"
+            render(world, objects)
+        else:
+            print "unknown command: " + cmd
+        save_state(world, objects)
+
+main_loop()
