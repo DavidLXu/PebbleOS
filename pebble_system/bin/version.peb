@@ -1,0 +1,28 @@
+import system.lib.base
+
+def print_help():
+    print "version [OPTION]..."
+    print "  --short  print semantic version only"
+    print "  --all    print semantic version and release label"
+    print "  --help   print this help"
+
+semver = system.lib.base.os_release()
+label = system.lib.base.os_version()
+
+if ARGC == 0:
+    print semver
+else:
+    i = 0
+    while i < ARGC:
+        arg = argv(i)
+        if arg == "--short":
+            print semver
+        elif arg == "--all":
+            print semver + " (" + label + ")"
+        elif arg == "--help":
+            print_help()
+            return 0
+        else:
+            print "version: invalid option -- '" + arg + "'"
+            return 1
+        i = i + 1
