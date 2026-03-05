@@ -6,10 +6,10 @@
 
 基于当前仓库现状，PebbleOS 已经有这些基础：
 
-- Pebble 侧 shell 和 runtime：[`/Users/xulixin/LX_OS/pebble_system/shell.peb`](/Users/xulixin/LX_OS/pebble_system/shell.peb)
-- Pebble 侧 VFS/MFS、路径模型、内存/heap：[`/Users/xulixin/LX_OS/pebble_system/runtime.peb`](/Users/xulixin/LX_OS/pebble_system/runtime.peb)
+- Pebble 侧 shell 和 runtime：[`pebble_system/shell.peb`](pebble_system/shell.peb)
+- Pebble 侧 VFS/MFS、路径模型、内存/heap：[`pebble_system/runtime.peb`](pebble_system/runtime.peb)
 - 前后台任务、VM task snapshot、`ps/jobs/fg` 雏形
-- Python bootloader/host ABI 仍然承担解释器、bytecode VM、终端 I/O、原始文件系统和后台线程调度：[`/Users/xulixin/LX_OS/pebble_bootloader/shell.py`](/Users/xulixin/LX_OS/pebble_bootloader/shell.py)
+- Python bootloader/host ABI 仍然承担解释器、bytecode VM、终端 I/O、原始文件系统和后台线程调度：[`pebble_bootloader/shell.py`](pebble_bootloader/shell.py)
 
 和现代 Linux 风格系统相比，当前主要欠缺：
 
@@ -135,7 +135,7 @@
 ### 3. Shell command surface 迁移
 
 当前 shell 还是固定 dispatch：
-[`/Users/xulixin/LX_OS/pebble_system/shell.peb`](/Users/xulixin/LX_OS/pebble_system/shell.peb)
+[`pebble_system/shell.peb`](pebble_system/shell.peb)
 
 目标改成：
 - 内建只保留 `cd`, `exit`, `export`, `set`, `jobs`, `fg`, `bg`, `source`
@@ -595,7 +595,7 @@ Pebble 侧定义：
 输出一份正式 syscall/host ABI 规范文档，并标记现有 Python host_functions 的迁移归宿。
 
 2. Runtime split
-把 [`/Users/xulixin/LX_OS/pebble_system/runtime.peb`](/Users/xulixin/LX_OS/pebble_system/runtime.peb) 拆成 kernel/lib 层，先不改行为，只改结构。
+把 [`pebble_system/runtime.peb`](pebble_system/runtime.peb) 拆成 kernel/lib 层，先不改行为，只改结构。
 
 3. Process table unification
 把 `BackgroundJob` / `VMTask` 统一成单一进程模型，`ps/jobs/fg` 全部改走新表。
@@ -631,27 +631,27 @@ procfs/tmpfs/devfs placeholder 完整落地。
 
 建议新增或重组这些路径：
 
-- `/Users/xulixin/LX_OS/pebble_system/kernel/syscall.peb`
-- `/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb`
-- `/Users/xulixin/LX_OS/pebble_system/kernel/fd.peb`
-- `/Users/xulixin/LX_OS/pebble_system/kernel/fs.peb`
-- `/Users/xulixin/LX_OS/pebble_system/kernel/sched.peb`
-- `/Users/xulixin/LX_OS/pebble_system/kernel/term.peb`
-- `/Users/xulixin/LX_OS/pebble_system/kernel/service.peb`
-- `/Users/xulixin/LX_OS/pebble_system/bin/sh.peb`
-- `/Users/xulixin/LX_OS/pebble_system/bin/ps.peb`
-- `/Users/xulixin/LX_OS/pebble_system/bin/echo.peb`
-- `/Users/xulixin/LX_OS/pebble_system/bin/find.peb`
-- `/Users/xulixin/LX_OS/pebble_system/init.peb`
-- `/Users/xulixin/LX_OS/docs/ABI.md`
-- `/Users/xulixin/LX_OS/docs/PROCESS.md`
-- `/Users/xulixin/LX_OS/docs/FILESYSTEM_V2.md`
+- `pebble_system/kernel/syscall.peb`
+- `pebble_system/kernel/proc.peb`
+- `pebble_system/kernel/fd.peb`
+- `pebble_system/kernel/fs.peb`
+- `pebble_system/kernel/sched.peb`
+- `pebble_system/kernel/term.peb`
+- `pebble_system/kernel/service.peb`
+- `pebble_system/bin/sh.peb`
+- `pebble_system/bin/ps.peb`
+- `pebble_system/bin/echo.peb`
+- `pebble_system/bin/find.peb`
+- `pebble_system/init.peb`
+- `docs/ABI.md`
+- `docs/PROCESS.md`
+- `docs/FILESYSTEM_V2.md`
 
 Python 侧应逐步收敛为：
 
-- `/Users/xulixin/LX_OS/pebble_bootloader/lang.py`
-- `/Users/xulixin/LX_OS/pebble_bootloader/shell.py`
-- `/Users/xulixin/LX_OS/pebble_bootloader/fs.py`
+- `pebble_bootloader/lang.py`
+- `pebble_bootloader/shell.py`
+- `pebble_bootloader/fs.py`
 
 但其职责会被压缩。
 

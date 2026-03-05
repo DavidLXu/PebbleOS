@@ -32,6 +32,7 @@ class PebbleMutexBlocked(Exception):
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MODULE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 DEF_RE = re.compile(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)\((.*)\):$")
+CLASS_RE = re.compile(r"^class\s+([A-Za-z_][A-Za-z0-9_]*):$")
 FOR_RE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+):$")
 ASSIGN_RE = re.compile(r"^(.+?)\s*=(?!=)\s*(.+)$")
 
@@ -168,7 +169,41 @@ class FunctionValue:
     function: object
 
 
-Value = int | float | bool | None | str | ModuleObject | FunctionValue | list["Value"] | dict["Value", "Value"]
+@dataclass
+class ClassObject:
+    name: str
+    values: dict[str, "Value"]
+    methods: dict[str, object]
+
+
+@dataclass
+class InstanceObject:
+    cls: ClassObject
+    fields: dict[str, "Value"]
+
+
+@dataclass
+class BoundMethodValue:
+    class_name: str
+    method_name: str
+    function: object
+    instance: InstanceObject
+
+
+Value = (
+    int
+    | float
+    | bool
+    | None
+    | str
+    | ModuleObject
+    | ClassObject
+    | InstanceObject
+    | FunctionValue
+    | BoundMethodValue
+    | list["Value"]
+    | dict["Value", "Value"]
+)
 HostFunction = Callable[[list[Value], int], Value]
 
 
@@ -185,7 +220,14 @@ class IndexTarget:
     line_number: int
 
 
-Target = NameTarget | IndexTarget
+@dataclass
+class AttrTarget:
+    value: Expr
+    attr: str
+    line_number: int
+
+
+Target = NameTarget | IndexTarget | AttrTarget
 
 
 @dataclass
@@ -285,6 +327,13 @@ class RaiseStmt:
     line_number: int
 
 
+@dataclass
+class ClassDefStmt:
+    name: str
+    body: list["Stmt"]
+    line_number: int
+
+
 Stmt = (
     AssignStmt
     | PrintStmt
@@ -296,6 +345,7 @@ Stmt = (
     | WhileStmt
     | ForStmt
     | FunctionDefStmt
+    | ClassDefStmt
     | ReturnStmt
     | ImportStmt
     | TryStmt
@@ -490,6 +540,17 @@ class Parser:
                 line_number=line.number,
             )
 
+        if text.startswith("class "):
+            match = CLASS_RE.match(text)
+            if not match:
+                raise PebbleError(f"line {line.number}: invalid class definition")
+            self.index += 1
+            return ClassDefStmt(
+                name=match.group(1),
+                body=self._parse_indented_block(line),
+                line_number=line.number,
+            )
+
         if text.startswith("return "):
             self.index += 1
             return ReturnStmt(expr=self._parse_expression(text[7:], line.number), line_number=line.number)
@@ -552,7 +613,7 @@ class Parser:
             return ExprStmt(expr=expr, line_number=line.number)
 
         raise PebbleError(
-            f"line {line.number}: expected assignment, print, if, while, for, def, return, raise, import, try, pass, break, continue, or a function call"
+            f"line {line.number}: expected assignment, print, if, while, for, def, class, return, raise, import, try, pass, break, continue, or a function call"
         )
 
     def _parse_except_header(self, line: SourceLine, try_line: SourceLine) -> str | None:
@@ -581,6 +642,12 @@ class Parser:
             return IndexTarget(
                 value=self._convert_expr_node(node.value, line_number),
                 index=self._convert_slice_node(node.slice, line_number),
+                line_number=line_number,
+            )
+        if isinstance(node, ast.Attribute):
+            return AttrTarget(
+                value=self._convert_expr_node(node.value, line_number),
+                attr=node.attr,
                 line_number=line_number,
             )
         raise PebbleError(f"line {line_number}: invalid assignment target")
@@ -846,6 +913,8 @@ class BytecodeCompiler:
                 BytecodeFunction(stmt.name, stmt.params, self.compile(stmt.body), stmt.line_number),
                 stmt.line_number,
             )
+        if isinstance(stmt, ClassDefStmt):
+            return ("CLASS", stmt.name, self.compile(stmt.body), stmt.line_number)
         if isinstance(stmt, ReturnStmt):
             return ("RETURN", self._compile_expr(stmt.expr), stmt.line_number)
         if isinstance(stmt, RaiseStmt):
@@ -861,6 +930,8 @@ class BytecodeCompiler:
             return ("NAME", target.name, target.line_number)
         if isinstance(target, IndexTarget):
             return ("INDEX", self._compile_expr(target.value), self._compile_expr(target.index), target.line_number)
+        if isinstance(target, AttrTarget):
+            return ("ATTR", self._compile_expr(target.value), target.attr, target.line_number)
         raise PebbleError("unknown assignment target")
 
     def _compile_expr(self, expr: Expr) -> list[tuple]:
@@ -929,27 +1000,43 @@ class PebbleInterpreter:
         self.path_resolver = path_resolver
         self.host_functions = host_functions or {}
         self.source_text = ""
+        self._session_ready = False
 
     def execute(self, source: str, initial_globals: dict[str, Value] | None = None) -> list[str]:
         self.source_text = source
         statements = Parser(source).parse()
-        self.output: list[str] = []
-        self.globals: dict[str, Value] = {
+        self._reset_state(initial_globals=initial_globals)
+        self._execute_block(statements, local_env=None)
+        return self.output
+
+    def start_repl_session(self, initial_globals: dict[str, Value] | None = None) -> None:
+        self._reset_state(initial_globals=initial_globals)
+
+    def execute_repl_line(self, source: str) -> list[str]:
+        if not self._session_ready:
+            self._reset_state(initial_globals=None)
+        self.source_text = source
+        statements = Parser(source).parse()
+        previous_output_count = len(self.output)
+        self._execute_block(statements, local_env=None)
+        return self.output[previous_output_count:]
+
+    def _reset_state(self, initial_globals: dict[str, Value] | None = None) -> None:
+        self.output = []
+        self.globals = {
             "CWD": "/",
             "FS_MODE": "hostfs",
             "MFS_READY": 0,
             "MFS_DB": {"files": {}},
         }
-        self.functions: dict[str, UserFunction] = {}
-        self.module_cache: dict[str, ModuleObject] = {}
-        self.module_loading: set[str] = set()
+        self.functions = {}
+        self.module_cache = {}
+        self.module_loading = set()
         self.fs_root.mkdir(parents=True, exist_ok=True)
         if initial_globals:
             for name, value in initial_globals.items():
                 self.globals[name] = self._clone_value(value)
-
-        self._execute_block(statements, local_env=None)
-        return self.output
+        self._session_ready = True
 
     def _execute_block(self, statements: list[Stmt], local_env: dict[str, Value] | None) -> None:
         for statement in statements:
@@ -1028,6 +1115,17 @@ class PebbleInterpreter:
             )
             return
 
+        if isinstance(statement, ClassDefStmt):
+            class_values: dict[str, Value] = {}
+            class_methods: dict[str, object] = {}
+            self._execute_in_scope(class_values, class_methods, statement.body)
+            self._write_variable(
+                statement.name,
+                ClassObject(statement.name, class_values, class_methods),
+                local_env,
+            )
+            return
+
         if isinstance(statement, ReturnStmt):
             if local_env is None:
                 raise PebbleError(f"line {statement.line_number}: return is only allowed inside functions")
@@ -1070,6 +1168,11 @@ class PebbleInterpreter:
             if isinstance(container, dict):
                 container[index_value] = self._clone_value(value)
                 return
+            if isinstance(container, InstanceObject):
+                if not isinstance(index_value, str):
+                    raise PebbleError(f"line {target.line_number}: instance field index must be a string")
+                container.fields[index_value] = self._clone_value(value)
+                return
             if not isinstance(index_value, int):
                 raise PebbleError(f"line {target.line_number}: list index must be an integer")
             if not isinstance(container, list):
@@ -1079,6 +1182,18 @@ class PebbleInterpreter:
             except IndexError as exc:
                 raise PebbleError(f"line {target.line_number}: list index out of range") from exc
             return
+        if isinstance(target, AttrTarget):
+            container = self._eval_expr(target.value, local_env)
+            if isinstance(container, InstanceObject):
+                container.fields[target.attr] = self._clone_value(value)
+                return
+            if isinstance(container, ClassObject):
+                container.values[target.attr] = self._clone_value(value)
+                return
+            if isinstance(container, ModuleObject):
+                container.values[target.attr] = self._clone_value(value)
+                return
+            raise PebbleError(f"line {target.line_number}: attribute assignment requires a module, class, or instance")
         raise PebbleError("unknown assignment target")
 
     def _eval_expr(self, expr: Expr, local_env: dict[str, Value] | None) -> Value:
@@ -1119,10 +1234,10 @@ class PebbleInterpreter:
         if isinstance(expr, AttrCallExpr):
             target = self._eval_expr(expr.value, local_env)
             args = [self._eval_expr(arg, local_env) for arg in expr.args]
-            return self._call_module_member(target, expr.attr, args, expr.line_number, local_env)
+            return self._call_attr_member(target, expr.attr, args, expr.line_number, local_env)
         if isinstance(expr, AttrExpr):
             target = self._eval_expr(expr.value, local_env)
-            return self._get_module_member(target, expr.attr, expr.line_number)
+            return self._get_attr_member(target, expr.attr, expr.line_number)
         if isinstance(expr, ListExpr):
             return [self._clone_value(self._eval_expr(item, local_env)) for item in expr.items]
         if isinstance(expr, DictExpr):
@@ -1140,6 +1255,13 @@ class PebbleInterpreter:
                     return container[index_value]
                 except KeyError as exc:
                     raise PebbleError(f"line {expr.line_number}: dict key not found") from exc
+            if isinstance(container, InstanceObject):
+                if not isinstance(index_value, str):
+                    raise PebbleError(f"line {expr.line_number}: instance field index must be a string")
+                try:
+                    return container.fields[index_value]
+                except KeyError as exc:
+                    raise PebbleError(f"line {expr.line_number}: instance field not found") from exc
             if not isinstance(index_value, int):
                 raise PebbleError(f"line {expr.line_number}: index must be an integer")
             if not isinstance(container, (list, str)):
@@ -1202,8 +1324,12 @@ class PebbleInterpreter:
             target = self._read_variable(name, line_number, local_env)
         except PebbleError:
             target = None
+        if isinstance(target, ClassObject):
+            return self._instantiate_class(target, args, line_number)
         if isinstance(target, FunctionValue):
             return self._call_function_object(target.name, target.function, args, line_number, local_env)
+        if isinstance(target, BoundMethodValue):
+            return self._call_bound_method(target, args, line_number, local_env)
         if name in self.functions:
             return self._call_function_by_name(name, args, line_number, local_env)
         return self._call_builtin_args(name, args, line_number)
@@ -1472,12 +1598,7 @@ class PebbleInterpreter:
             return module
         if name in self.module_loading:
             raise PebbleError(f"line {line_number}: circular import for module '{name}'")
-        module_path = name.replace(".", "/") + ".peb"
-        path = self._resolve_file_arg(module_path, line_number)
-        try:
-            source = path.read_text(encoding="utf-8")
-        except FileNotFoundError as exc:
-            raise PebbleError(f"line {line_number}: unknown module '{name}'") from exc
+        source = self._load_module_source(name, line_number)
         self.module_loading.add(name)
         try:
             module = self._load_user_module(name, source, line_number)
@@ -1485,6 +1606,24 @@ class PebbleInterpreter:
             return module
         finally:
             self.module_loading.remove(name)
+
+    def _load_module_source(self, name: str, line_number: int) -> str:
+        module_path = name.replace(".", "/") + ".peb"
+        candidates = [module_path]
+        if "." not in name:
+            # Allow top-level imports like "import torch" to resolve to system/lib/torch.peb
+            # so wrapper files in pebble_disk are optional.
+            candidates.append("system/lib/" + name + ".peb")
+        last_error: Exception | None = None
+        i = 0
+        while i < len(candidates):
+            try:
+                path = self._resolve_file_arg(candidates[i], line_number)
+                return path.read_text(encoding="utf-8")
+            except FileNotFoundError as exc:
+                last_error = exc
+            i = i + 1
+        raise PebbleError(f"line {line_number}: unknown module '{name}'") from last_error
 
     def _load_user_module(self, name: str, source: str, line_number: int) -> ModuleObject:
         child = self.__class__(
@@ -1510,7 +1649,7 @@ class PebbleInterpreter:
             return "<builtin " + target.name + "." + attr + ">"
         raise PebbleError(f"line {line_number}: module '{target.name}' has no member '{attr}'")
 
-    def _call_module_member(
+    def _call_attr_member(
         self,
         target: Value,
         attr: str,
@@ -1518,19 +1657,61 @@ class PebbleInterpreter:
         line_number: int,
         local_env: dict[str, Value] | None,
     ) -> Value:
-        if not isinstance(target, ModuleObject):
-            raise PebbleError(f"line {line_number}: attribute calls require a module")
-        member = target.builtins.get(attr)
-        if member is not None:
-            return self._invoke_name(member, args, line_number, local_env)
-        function = target.functions.get(attr)
-        if function is not None:
-            return self._call_module_function(target, function, args, line_number)
-        raise PebbleError(f"line {line_number}: module '{target.name}' has no callable member '{attr}'")
+        if isinstance(target, ModuleObject):
+            member = target.builtins.get(attr)
+            if member is not None:
+                return self._invoke_name(member, args, line_number, local_env)
+            function = target.functions.get(attr)
+            if function is not None:
+                return self._call_scoped_function(
+                    target.values,
+                    target.functions,
+                    function.name,
+                    function,
+                    args,
+                    line_number,
+                )
+            raise PebbleError(f"line {line_number}: module '{target.name}' has no callable member '{attr}'")
+        if isinstance(target, ClassObject):
+            function = target.methods.get(attr)
+            if function is None:
+                raise PebbleError(f"line {line_number}: class '{target.name}' has no callable member '{attr}'")
+            return self._call_scoped_function(
+                target.values,
+                target.methods,
+                function.name,
+                function,
+                args,
+                line_number,
+            )
+        if isinstance(target, InstanceObject):
+            if attr in target.fields:
+                value = target.fields[attr]
+                if isinstance(value, FunctionValue):
+                    return self._call_function_object(value.name, value.function, args, line_number, local_env)
+                if isinstance(value, BoundMethodValue):
+                    return self._call_bound_method(value, args, line_number, local_env)
+                raise PebbleError(f"line {line_number}: instance field '{attr}' is not callable")
+            function = target.cls.methods.get(attr)
+            if function is None:
+                raise PebbleError(
+                    f"line {line_number}: instance of '{target.cls.name}' has no callable member '{attr}'"
+                )
+            return self._call_scoped_function(
+                target.cls.values,
+                target.cls.methods,
+                function.name,
+                function,
+                [target] + args,
+                line_number,
+            )
+        raise PebbleError(f"line {line_number}: attribute calls require a module, class, or instance")
 
-    def _call_module_function(
+    def _call_scoped_function(
         self,
-        module: ModuleObject,
+        scope_values: dict[str, Value],
+        scope_functions: dict[str, object],
+        name: str,
         function: object,
         args: list[Value],
         line_number: int,
@@ -1538,14 +1719,82 @@ class PebbleInterpreter:
         old_globals = self.globals
         old_functions = self.functions
         try:
-            self.globals = module.values
-            self.functions = module.functions
-            if isinstance(function, UserFunction):
-                return self._call_function_by_name(function.name, args, line_number, None)
-            return self._call_function_by_name(function.name, args, line_number, None)
+            self.globals = scope_values
+            self.functions = scope_functions
+            return self._call_function_object(name, function, args, line_number, None)
         finally:
             self.globals = old_globals
             self.functions = old_functions
+
+    def _execute_in_scope(self, scope_values: dict[str, Value], scope_functions: dict[str, object], body: list[Stmt]) -> None:
+        old_globals = self.globals
+        old_functions = self.functions
+        try:
+            self.globals = scope_values
+            self.functions = scope_functions
+            self._execute_block(body, local_env=None)
+        finally:
+            self.globals = old_globals
+            self.functions = old_functions
+
+    def _instantiate_class(self, cls: ClassObject, args: list[Value], line_number: int) -> Value:
+        instance = InstanceObject(cls, {})
+        init_fn = cls.methods.get("__init__")
+        if init_fn is None:
+            if len(args) != 0:
+                raise PebbleError(
+                    f"line {line_number}: class '{cls.name}' expected 0 constructor arguments but got {len(args)}"
+                )
+            return instance
+        self._call_scoped_function(
+            cls.values,
+            cls.methods,
+            init_fn.name,
+            init_fn,
+            [instance] + args,
+            line_number,
+        )
+        return instance
+
+    def _call_bound_method(
+        self,
+        method: BoundMethodValue,
+        args: list[Value],
+        line_number: int,
+        local_env: dict[str, Value] | None,
+    ) -> Value:
+        return self._call_scoped_function(
+            method.instance.cls.values,
+            method.instance.cls.methods,
+            method.method_name,
+            method.function,
+            [method.instance] + args,
+            line_number,
+        )
+
+    def _get_attr_member(self, target: Value, attr: str, line_number: int) -> Value:
+        if isinstance(target, ModuleObject):
+            return self._get_module_member(target, attr, line_number)
+        if isinstance(target, ClassObject):
+            if attr in target.values:
+                return target.values[attr]
+            if attr in target.methods:
+                return FunctionValue(target.name + "." + attr, target.methods[attr])
+            raise PebbleError(f"line {line_number}: class '{target.name}' has no member '{attr}'")
+        if isinstance(target, InstanceObject):
+            if attr in target.fields:
+                return target.fields[attr]
+            if attr in target.cls.values:
+                return target.cls.values[attr]
+            if attr in target.cls.methods:
+                return BoundMethodValue(
+                    class_name=target.cls.name,
+                    method_name=attr,
+                    function=target.cls.methods[attr],
+                    instance=target,
+                )
+            raise PebbleError(f"line {line_number}: instance of '{target.cls.name}' has no member '{attr}'")
+        raise PebbleError(f"line {line_number}: attribute access requires a module, class, or instance")
 
     def _require_arity(self, expr: CallExpr, args: list[Value], expected: int) -> None:
         if len(args) != expected:
@@ -1603,7 +1852,13 @@ class PebbleInterpreter:
     def _clone_value(self, value: Value) -> Value:
         if isinstance(value, ModuleObject):
             return value
+        if isinstance(value, ClassObject):
+            return value
+        if isinstance(value, InstanceObject):
+            return value
         if isinstance(value, FunctionValue):
+            return value
+        if isinstance(value, BoundMethodValue):
             return value
         if isinstance(value, list):
             return self._clone_list(value)
@@ -1643,6 +1898,12 @@ class PebbleInterpreter:
             return value
         if isinstance(value, ModuleObject):
             return "<module " + value.name + ">"
+        if isinstance(value, ClassObject):
+            return "<class " + value.name + ">"
+        if isinstance(value, InstanceObject):
+            return "<" + value.cls.name + " instance>"
+        if isinstance(value, BoundMethodValue):
+            return "<bound method " + value.class_name + "." + value.method_name + ">"
         if isinstance(value, dict):
             parts: list[str] = []
             for key, item in value.items():
@@ -1939,6 +2200,12 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
             fn = instr[1]
             self.functions[fn.name] = fn
             return
+        if op == "CLASS":
+            class_values: dict[str, Value] = {}
+            class_methods: dict[str, object] = {}
+            self._execute_compiled_in_scope(class_values, class_methods, instr[2], local_env)
+            self._write_variable(instr[1], ClassObject(instr[1], class_values, class_methods), local_env)
+            return
         if op == "RETURN":
             if local_env is None:
                 raise PebbleError(f"line {instr[2]}: return is only allowed inside functions")
@@ -2079,6 +2346,12 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
             fn = instr[1]
             self.functions[fn.name] = fn
             return
+        if op == "CLASS":
+            class_values: dict[str, Value] = {}
+            class_methods: dict[str, object] = {}
+            self._execute_compiled_in_scope(class_values, class_methods, instr[2], local_env)
+            self._write_variable(instr[1], ClassObject(instr[1], class_values, class_methods), local_env)
+            return
         if op == "RETURN":
             if local_env is None:
                 raise PebbleError(f"line {instr[2]}: return is only allowed inside functions")
@@ -2109,6 +2382,11 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
             if isinstance(container, dict):
                 container[index_value] = self._clone_value(value)
                 return
+            if isinstance(container, InstanceObject):
+                if not isinstance(index_value, str):
+                    raise PebbleError(f"line {line_number}: instance field index must be a string")
+                container.fields[index_value] = self._clone_value(value)
+                return
             if not isinstance(index_value, int):
                 raise PebbleError(f"line {line_number}: list index must be an integer")
             if not isinstance(container, list):
@@ -2118,6 +2396,20 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
             except IndexError as exc:
                 raise PebbleError(f"line {line_number}: list index out of range") from exc
             return
+        if target[0] == "ATTR":
+            container = self._eval_compiled_expr(target[1], local_env)
+            attr = target[2]
+            line_number = target[3]
+            if isinstance(container, InstanceObject):
+                container.fields[attr] = self._clone_value(value)
+                return
+            if isinstance(container, ClassObject):
+                container.values[attr] = self._clone_value(value)
+                return
+            if isinstance(container, ModuleObject):
+                container.values[attr] = self._clone_value(value)
+                return
+            raise PebbleError(f"line {line_number}: attribute assignment requires a module, class, or instance")
         raise PebbleError("unknown assignment target")
 
     def _eval_compiled_expr(self, code: list[tuple], local_env: dict[str, Value] | None) -> Value:
@@ -2168,10 +2460,10 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
                 if argc:
                     del stack[-argc:]
                 target = stack.pop()
-                stack.append(self._call_module_member(target, instr[1], args, instr[3], local_env))
+                stack.append(self._call_attr_member(target, instr[1], args, instr[3], local_env))
             elif op == "ATTR":
                 target = stack.pop()
-                stack.append(self._get_module_member(target, instr[1], instr[2]))
+                stack.append(self._get_attr_member(target, instr[1], instr[2]))
             elif op == "LIST":
                 count = instr[1]
                 items = stack[-count:] if count else []
@@ -2197,6 +2489,13 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
                         stack.append(container[index_value])
                     except KeyError as exc:
                         raise PebbleError(f"line {instr[1]}: dict key not found") from exc
+                elif isinstance(container, InstanceObject):
+                    if not isinstance(index_value, str):
+                        raise PebbleError(f"line {instr[1]}: instance field index must be a string")
+                    try:
+                        stack.append(container.fields[index_value])
+                    except KeyError as exc:
+                        raise PebbleError(f"line {instr[1]}: instance field not found") from exc
                 else:
                     if not isinstance(index_value, int):
                         raise PebbleError(f"line {instr[1]}: index must be an integer")
@@ -2214,6 +2513,23 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
         if len(stack) != base:
             raise PebbleError("bytecode value stack leak")
         return result
+
+    def _execute_compiled_in_scope(
+        self,
+        scope_values: dict[str, Value],
+        scope_functions: dict[str, object],
+        code: list[tuple],
+        local_env: dict[str, Value] | None,
+    ) -> None:
+        old_globals = self.globals
+        old_functions = self.functions
+        try:
+            self.globals = scope_values
+            self.functions = scope_functions
+            self._execute_code(code, local_env=None)
+        finally:
+            self.globals = old_globals
+            self.functions = old_functions
 
     def _call_builtin_args(self, name: str, args: list[Value], line_number: int) -> Value:
         expr = CallExpr(name=name, args=[], line_number=line_number)

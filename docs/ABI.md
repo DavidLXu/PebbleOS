@@ -88,11 +88,11 @@ This document is the phase-0 inventory and migration target for that ABI.
 
 Milestone 1 introduces these Pebble entry points:
 
-- [`/Users/xulixin/LX_OS/pebble_system/lib/base.peb`](/Users/xulixin/LX_OS/pebble_system/lib/base.peb)
-- [`/Users/xulixin/LX_OS/pebble_system/kernel/syscall.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/syscall.peb)
-- [`/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb)
-- [`/Users/xulixin/LX_OS/pebble_system/kernel/thread.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/thread.peb)
-- [`/Users/xulixin/LX_OS/pebble_system/kernel/term.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/term.peb)
+- [`pebble_system/lib/base.peb`](pebble_system/lib/base.peb)
+- [`pebble_system/kernel/syscall.peb`](pebble_system/kernel/syscall.peb)
+- [`pebble_system/kernel/proc.peb`](pebble_system/kernel/proc.peb)
+- [`pebble_system/kernel/thread.peb`](pebble_system/kernel/thread.peb)
+- [`pebble_system/kernel/term.peb`](pebble_system/kernel/term.peb)
 
 These modules currently provide:
 
@@ -123,7 +123,7 @@ refactors such as a unified process table or fd layer.
 ## Terminal And TTY ABI
 
 Pebble terminal programs should prefer
-[`/Users/xulixin/LX_OS/pebble_system/kernel/term.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/term.peb)
+[`pebble_system/kernel/term.peb`](pebble_system/kernel/term.peb)
 instead of calling host-exposed `term_*` names directly.
 
 Current terminal syscalls:
@@ -158,7 +158,7 @@ Python host substrate.
 ## Thread ABI
 
 Milestone A exposes a bootstrap thread ABI through
-[`/Users/xulixin/LX_OS/pebble_system/kernel/thread.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/thread.peb).
+[`pebble_system/kernel/thread.peb`](pebble_system/kernel/thread.peb).
 
 Current thread syscalls:
 

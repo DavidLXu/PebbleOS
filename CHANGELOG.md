@@ -4,6 +4,14 @@ All notable changes to PebbleOS are documented in this file.
 
 Versioning policy: [docs/VERSIONING.md](docs/VERSIONING.md)
 
+## [0.1.1] - 2026-03-06
+
+Maintenance release that consolidates pending PebbleOS runtime, shell, userland,
+and documentation updates accumulated after `0.1.0`.
+
+- Version metadata updated to `0.1.1` across repository and runtime-visible APIs.
+- Includes all currently staged workspace improvements and fixes since `0.1.0`.
+
 ## [0.1.0] - 2026-03-06
 
 Initial public baseline for the modern PebbleOS architecture.

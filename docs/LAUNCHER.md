@@ -6,7 +6,7 @@ This document defines the user-visible command launch rules for PebbleOS as of M
 
 When the interactive shell receives a command, it resolves it in this order:
 
-1. Shell builtins in [`/Users/xulixin/LX_OS/pebble_system/shell.peb`](/Users/xulixin/LX_OS/pebble_system/shell.peb)
+1. Shell builtins in [`pebble_system/shell.peb`](pebble_system/shell.peb)
 2. `PATH` lookup for `/system/bin/*.peb` and `/system/sbin/*.peb`
 3. `/bin/...` compatibility mapping to `/system/bin/...`
 4. Direct Pebble program launch from the current directory, with `.peb` implied when omitted

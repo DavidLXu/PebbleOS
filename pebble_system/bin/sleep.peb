@@ -1,0 +1,115 @@
+if ARGC != 1:
+    print "sleep: exactly one argument required"
+else:
+    seconds = argv(0)
+    i = 0
+    is_valid = 1
+    has_dot = 0
+    while i < len(seconds):
+        ch = seconds[i]
+        if ch == ".":
+            if has_dot:
+                is_valid = 0
+            has_dot = 1
+        elif ch < "0" or ch > "9":
+            is_valid = 0
+        i = i + 1
+    if is_valid == 0:
+        print "sleep: invalid time interval"
+    else:
+        millis = 0
+        if has_dot:
+            whole = 0
+            frac = 0
+            frac_digits = 0
+            in_frac = 0
+            i = 0
+            while i < len(seconds):
+                ch = seconds[i]
+                if ch == ".":
+                    in_frac = 1
+                elif in_frac == 0:
+                    digit = 0
+                    if ch == "0":
+                        digit = 0
+                    elif ch == "1":
+                        digit = 1
+                    elif ch == "2":
+                        digit = 2
+                    elif ch == "3":
+                        digit = 3
+                    elif ch == "4":
+                        digit = 4
+                    elif ch == "5":
+                        digit = 5
+                    elif ch == "6":
+                        digit = 6
+                    elif ch == "7":
+                        digit = 7
+                    elif ch == "8":
+                        digit = 8
+                    elif ch == "9":
+                        digit = 9
+                    whole = whole * 10 + digit
+                else:
+                    digit = 0
+                    if ch == "0":
+                        digit = 0
+                    elif ch == "1":
+                        digit = 1
+                    elif ch == "2":
+                        digit = 2
+                    elif ch == "3":
+                        digit = 3
+                    elif ch == "4":
+                        digit = 4
+                    elif ch == "5":
+                        digit = 5
+                    elif ch == "6":
+                        digit = 6
+                    elif ch == "7":
+                        digit = 7
+                    elif ch == "8":
+                        digit = 8
+                    elif ch == "9":
+                        digit = 9
+                    frac = frac * 10 + digit
+                    frac_digits = frac_digits + 1
+                i = i + 1
+            millis = whole * 1000
+            if frac_digits == 1:
+                millis = millis + frac * 100
+            elif frac_digits == 2:
+                millis = millis + frac * 10
+            elif frac_digits >= 3:
+                millis = millis + frac
+        else:
+            i = 0
+            whole = 0
+            while i < len(seconds):
+                ch = seconds[i]
+                digit = 0
+                if ch == "0":
+                    digit = 0
+                elif ch == "1":
+                    digit = 1
+                elif ch == "2":
+                    digit = 2
+                elif ch == "3":
+                    digit = 3
+                elif ch == "4":
+                    digit = 4
+                elif ch == "5":
+                    digit = 5
+                elif ch == "6":
+                    digit = 6
+                elif ch == "7":
+                    digit = 7
+                elif ch == "8":
+                    digit = 8
+                elif ch == "9":
+                    digit = 9
+                whole = whole * 10 + digit
+                i = i + 1
+            millis = whole * 1000
+        sleep(millis)

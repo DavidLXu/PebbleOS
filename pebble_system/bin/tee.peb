@@ -1,0 +1,13 @@
+import system.lib.cli
+
+def write_to_file(name, content):
+    write_file(name, content)
+
+text = system.lib.cli.stdin_text()
+print text
+
+i = 0
+while i < ARGC:
+    name = argv(i)
+    write_to_file(name, text)
+    i = i + 1

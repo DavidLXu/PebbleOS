@@ -1,6 +1,12 @@
-if ARGC != 1:
-    print "a file name is required"
+if ARGC == 0:
+    print "usage: rm FILE [FILE ...]"
 else:
-    name = argv(0)
-    delete_file(name)
-    print "deleted " + name
+    i = 0
+    while i < ARGC:
+        name = argv(i)
+        try:
+            delete_file(name)
+            print "deleted " + name
+        except err:
+            print "rm: cannot remove '" + name + "': " + err
+        i = i + 1

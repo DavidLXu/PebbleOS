@@ -1,0 +1,82 @@
+import system.lib.torch
+
+def tensor(value):
+    return system.lib.torch.tensor(value)
+
+def shape(value):
+    return system.lib.torch.shape(value)
+
+def ndim(value):
+    return system.lib.torch.ndim(value)
+
+def size(value):
+    return system.lib.torch.size(value)
+
+def tolist(value):
+    return system.lib.torch.tolist(value)
+
+def zeros(shape):
+    return system.lib.torch.zeros(shape)
+
+def ones(shape):
+    return system.lib.torch.ones(shape)
+
+def full(shape, fill_value):
+    return system.lib.torch.full(shape, fill_value)
+
+def rand(shape):
+    return system.lib.torch.rand(shape)
+
+def randn(shape):
+    return system.lib.torch.randn(shape)
+
+def reshape(value, shape):
+    return system.lib.torch.reshape(value, shape)
+
+def transpose(value):
+    return system.lib.torch.transpose(value)
+
+def add(a, b):
+    return system.lib.torch.add(a, b)
+
+def sub(a, b):
+    return system.lib.torch.sub(a, b)
+
+def mul(a, b):
+    return system.lib.torch.mul(a, b)
+
+def div(a, b):
+    return system.lib.torch.div(a, b)
+
+def matmul(a, b):
+    return system.lib.torch.matmul(a, b)
+
+def dot(a, b):
+    return system.lib.torch.dot(a, b)
+
+def sum(value):
+    return system.lib.torch.sum(value)
+
+def argmax(value):
+    return system.lib.torch.argmax(value)
+
+def argmax_rows(value):
+    return system.lib.torch.argmax_rows(value)
+
+def one_hot(labels, classes):
+    return system.lib.torch.one_hot(labels, classes)
+
+def linear(x, w, b):
+    return system.lib.torch.linear(x, w, b)
+
+def mse_loss(pred, target):
+    return system.lib.torch.mse_loss(pred, target)
+
+def mse_grad(pred, target):
+    return system.lib.torch.mse_grad(pred, target)
+
+def mean_rows(value):
+    return system.lib.torch.mean_rows(value)
+
+def sgd(param, grad, lr):
+    return system.lib.torch.sgd(param, grad, lr)

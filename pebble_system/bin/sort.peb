@@ -1,0 +1,66 @@
+import system.lib.cli
+
+def strcmp(a, b):
+    i = 0
+    while i < len(a) and i < len(b):
+        if a[i] < b[i]:
+            return -1
+        if a[i] > b[i]:
+            return 1
+        i = i + 1
+    if len(a) < len(b):
+        return -1
+    if len(a) > len(b):
+        return 1
+    return 0
+
+def insertion_sort(items):
+    result = []
+    i = 0
+    while i < len(items):
+        item = items[i]
+        inserted = 0
+        temp = []
+        j = 0
+        while j < len(result):
+            if inserted == 0 and strcmp(item, result[j]) < 0:
+                append(temp, item)
+                inserted = 1
+            append(temp, result[j])
+            j = j + 1
+        if inserted == 0:
+            append(temp, item)
+        result = temp
+        i = i + 1
+    return result
+
+all_lines = []
+
+if ARGC == 0:
+    lines = system.lib.cli.split_lines(system.lib.cli.stdin_text())
+    i = 0
+    while i < len(lines):
+        append(all_lines, lines[i])
+        i = i + 1
+else:
+    i = 0
+    while i < ARGC:
+        name = argv(i)
+        if not file_exists(name):
+            print "sort: " + name + ": No such file or directory"
+            return 1
+        else:
+            text = read_file(name)
+            lines = system.lib.cli.split_lines(text)
+            j = 0
+            while j < len(lines):
+                append(all_lines, lines[j])
+                j = j + 1
+        i = i + 1
+
+sorted_lines = insertion_sort(all_lines)
+
+i = 0
+while i < len(sorted_lines):
+    print sorted_lines[i]
+    i = i + 1

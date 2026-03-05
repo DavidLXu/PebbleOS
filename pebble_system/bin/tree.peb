@@ -53,12 +53,6 @@ def is_known_directory(name, names, index, dir_cache):
     dir_cache[name] = result
     return result
 
-def print_lines(lines):
-    i = 0
-    while i < len(lines):
-        print lines[i]
-        i = i + 1
-
 def print_tree_fallback():
     names = list_files()
     if len(names) == 0:
@@ -95,7 +89,4 @@ def print_tree_fallback():
 if ARGC != 0:
     print "tree does not take arguments yet"
 else:
-    if active_fs_mode() == "hostfs":
-        print_lines(render_tree())
-    else:
-        print_tree_fallback()
+    print_tree_fallback()

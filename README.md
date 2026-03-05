@@ -9,15 +9,18 @@ This project is a tiny operating system simulator with:
 
 Detailed architecture notes:
 
-- filesystem: [FILESYSTEM.md](/Users/xulixin/LX_OS/FILESYSTEM.md)
-- memory/runtime: [MEMORY.md](/Users/xulixin/LX_OS/MEMORY.md)
-- language: [LANG.md](/Users/xulixin/LX_OS/LANG.md)
-- ABI: [docs/ABI.md](/Users/xulixin/LX_OS/docs/ABI.md)
-- process model: [docs/PROCESS.md](/Users/xulixin/LX_OS/docs/PROCESS.md)
-- launcher semantics: [docs/LAUNCHER.md](/Users/xulixin/LX_OS/docs/LAUNCHER.md)
-- shell/login semantics: [docs/SHELL_LOGIN.md](/Users/xulixin/LX_OS/docs/SHELL_LOGIN.md)
-- tty/input semantics: [docs/TTY_INPUT.md](/Users/xulixin/LX_OS/docs/TTY_INPUT.md)
-- Pebble vs Python 3.x language gaps: [docs/PEBBLE_LANGUAGE_GAPS.md](/Users/xulixin/LX_OS/docs/PEBBLE_LANGUAGE_GAPS.md)
+- current release: `0.1.1` ([VERSION](VERSION))
+- changelog: [CHANGELOG.md](CHANGELOG.md)
+- release/versioning policy: [docs/VERSIONING.md](docs/VERSIONING.md)
+- filesystem: [FILESYSTEM.md](FILESYSTEM.md)
+- memory/runtime: [MEMORY.md](MEMORY.md)
+- language: [LANG.md](LANG.md)
+- ABI: [docs/ABI.md](docs/ABI.md)
+- process model: [docs/PROCESS.md](docs/PROCESS.md)
+- launcher semantics: [docs/LAUNCHER.md](docs/LAUNCHER.md)
+- shell/login semantics: [docs/SHELL_LOGIN.md](docs/SHELL_LOGIN.md)
+- tty/input semantics: [docs/TTY_INPUT.md](docs/TTY_INPUT.md)
+- Pebble vs Python 3.x language gaps: [docs/PEBBLE_LANGUAGE_GAPS.md](docs/PEBBLE_LANGUAGE_GAPS.md)
 
 ## Pebble language
 
@@ -26,10 +29,10 @@ four-space indentation, interpreter mode with `run`, bytecode mode with `exec`,
 built-in modules like `math`, `memory`, and `heap`, and file-based user
 modules. `run` and `exec` still exist, but they are now compatibility launchers
 alongside the preferred direct-command model described in
-[docs/LAUNCHER.md](/Users/xulixin/LX_OS/docs/LAUNCHER.md).
+[docs/LAUNCHER.md](docs/LAUNCHER.md).
 
 For the full syntax, builtins, modules, examples, and execution model, see
-[LANG.md](/Users/xulixin/LX_OS/LANG.md).
+[LANG.md](LANG.md).
 
 ## Run the shell
 
@@ -58,18 +61,18 @@ Filesystem modes:
 - `vfs-persistent`: keep Pebble's virtual filesystem as the persistent source of truth
 
 Pebble OS also mounts the host system-runtime directory
-[`pebble_system/`](/Users/xulixin/LX_OS/pebble_system) as `system/...` for
+[`pebble_system/`](pebble_system) as `system/...` for
 bootstrapping Pebble-managed runtime files.
 
 At startup, Python now acts as the hidden bootloader layer in
-[`pebble_bootloader/`](/Users/xulixin/LX_OS/pebble_bootloader): it loads [`system/runtime.peb`](/Users/xulixin/LX_OS/pebble_system/runtime.peb),
-injects [`system/shell.peb`](/Users/xulixin/LX_OS/pebble_system/shell.peb) source as data,
+[`pebble_bootloader/`](pebble_bootloader): it loads [`system/runtime.peb`](pebble_system/runtime.peb),
+injects [`system/shell.peb`](pebble_system/shell.peb) source as data,
 calls `boot()`, and only then enters the interactive Pebble OS shell.
 The bootloader now delegates the shell prompt, intro text, help text, and
-all built-in command behavior to [`system/shell.peb`](/Users/xulixin/LX_OS/pebble_system/shell.peb).
-The shared Pebble runtime lives in [`system/runtime.peb`](/Users/xulixin/LX_OS/pebble_system/runtime.peb),
+all built-in command behavior to [`system/shell.peb`](pebble_system/shell.peb).
+The shared Pebble runtime lives in [`system/runtime.peb`](pebble_system/runtime.peb),
 and the default `nano` command now launches the runtime-managed editor in
-[`system/nano.peb`](/Users/xulixin/LX_OS/pebble_system/nano.peb).
+[`system/nano.peb`](pebble_system/nano.peb).
 
 ## Filesystem Modes
 
@@ -82,7 +85,7 @@ Pebble OS supports multiple filesystem backends behind one Pebble runtime API.
 - `vfs-persistent`: keep Pebble's virtual filesystem as the persistent source of truth
 
 For the full design, synchronization model, shadow-file bridge, and raw host
-bridge details, see [FILESYSTEM.md](/Users/xulixin/LX_OS/FILESYSTEM.md).
+bridge details, see [FILESYSTEM.md](FILESYSTEM.md).
 
 Useful commands:
 
@@ -132,8 +135,8 @@ PebbleOS also provides a standard compatibility shell command:
 - `/bin/sh FILE`
 
 Pebble language details, math/module support, user imports, and builtins are
-documented in [LANG.md](/Users/xulixin/LX_OS/LANG.md). Pebble memory layers are
-documented in [MEMORY.md](/Users/xulixin/LX_OS/MEMORY.md).
+documented in [LANG.md](LANG.md). Pebble memory layers are
+documented in [MEMORY.md](MEMORY.md).
 
 When creating or editing a file, finish input with a single `.` on its own line.
 
@@ -208,6 +211,18 @@ That preparation phase added:
 - Pebble error handling has advanced another step toward Python-style system code: `raise expression` now works in both interpreter and bytecode modes, still with a deliberately minimal runtime-error model
 - Pebble error recovery now also supports `except err:` bindings, with the bound value exposed as a stringified runtime error so system code can log or branch on failures without a full exception-class hierarchy yet
 - Pebble now has bootstrap first-class function values for user-defined functions, and the thread API has started using them via `thread_spawn(func, args)` instead of only `thread_spawn_source(...)`
+- fixed a `du` argument-parsing crash when run without a path by avoiding unsafe string indexing in the Pebble userland command implementation
+- improved the `test` command with clearer help, explicit invalid-operator diagnostics, optional printable output via `-p/--print`, and `!` negation support
+- added a Pebble-native `gcc` command for a minimal C subset, supporting simple `int` declarations/assignments, `printf`/`print`, and `return` translation into runnable Pebble source files
+- removed the `tree` command's host-only `render_tree()` dependency so it now runs fully in Pebble userland across filesystem modes
+- added a Pebble-native `numpy`-style module (`import numpy`) for array/matrix operations, including `array`, `reshape`, elementwise math, `dot`, and `matmul`, without requiring new Python host builtins
+- improved `rm` to accept multiple file paths in one command and continue processing remaining files when one delete fails
+- added a Pebble-native `torch`-style module (`import torch`) with tensor ops and SGD helpers, plus an `mnist_train.peb` demo that trains a tiny MNIST-like digit classifier in Pebble userland
+- changed `pebble` so running it without arguments opens an interactive Pebble REPL, while `pebble FILE [ARGS...]` still runs scripts
+- Pebble language now supports `class` definitions in both interpreter and bytecode modes, including instance methods, `__init__` constructors, and bound method values
+- established formal release/version management for the repo and runtime, with `VERSION`, `CHANGELOG.md`, `docs/VERSIONING.md`, runtime version constants, and a Pebble `version` command aligned to release `0.1.1`
+- top-level module imports now auto-resolve `numpy` and `torch` from `system/lib`, so `import numpy` / `import torch` work without wrapper files in the user disk
+- fixed `pebble` REPL evaluation state so definitions now persist across input lines (`a=1` then `print a` works in the same REPL session)
 
 This is the current transition point: PebbleOS is no longer just a bootstrap
 demo, but it is not yet a full modern system either. It now has enough

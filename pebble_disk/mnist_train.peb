@@ -1,0 +1,80 @@
+import torch
+
+def sample_digit_patterns():
+    x = []
+    append(x, [1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1])
+    append(x, [0, 1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1])
+    append(x, [0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0])
+    append(x, [0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1])
+    append(x, [1, 1, 1, 0, 0, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1])
+    append(x, [1, 1, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 1])
+    append(x, [1, 1, 1, 0, 0, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 0])
+    append(x, [1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0])
+    append(x, [1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1])
+    append(x, [1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0])
+    append(x, [1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0])
+    append(x, [1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0])
+    append(x, [0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0])
+    append(x, [0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0])
+    append(x, [1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 0])
+    append(x, [1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0])
+    append(x, [0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1])
+    append(x, [0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1])
+    append(x, [0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0])
+    append(x, [0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 1])
+    y = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9]
+    return {"x": x, "y": y}
+
+def accuracy(pred_labels, true_labels):
+    correct = 0
+    i = 0
+    while i < len(true_labels):
+        if pred_labels[i] == true_labels[i]:
+            correct = correct + 1
+        i = i + 1
+    if len(true_labels) == 0:
+        return 0
+    return (100 * correct) / len(true_labels)
+
+def int_mod(a, b):
+    if b <= 0:
+        return 0
+    while a >= b:
+        a = a - b
+    return a
+
+data = sample_digit_patterns()
+x = torch.tensor(data["x"])
+y = data["y"]
+
+input_dim = 16
+num_classes = 10
+epochs = 240
+lr = 0.8
+
+w = torch.sub(torch.rand([input_dim, num_classes]), 0.5)
+b = torch.zeros([num_classes])
+target = torch.one_hot(y, num_classes)
+
+epoch = 0
+while epoch < epochs:
+    logits = torch.linear(x, w, b)
+    loss = torch.mse_loss(logits, target)
+    grad_logits = torch.mse_grad(logits, target)
+    grad_w = torch.matmul(torch.transpose(x), grad_logits)
+    grad_b = torch.mean_rows(grad_logits)
+    w = torch.sgd(w, grad_w, lr)
+    b = torch.sgd(b, grad_b, lr)
+
+    if int_mod(epoch, 40) == 0:
+        preds = torch.argmax_rows(logits)
+        acc = accuracy(preds, y)
+        print "epoch=" + str(epoch) + " loss=" + str(loss) + " acc=" + str(acc) + "%"
+    epoch = epoch + 1
+
+final_logits = torch.linear(x, w, b)
+final_preds = torch.argmax_rows(final_logits)
+final_acc = accuracy(final_preds, y)
+
+print "final_acc=" + str(final_acc) + "%"
+print "pred=" + str(final_preds)

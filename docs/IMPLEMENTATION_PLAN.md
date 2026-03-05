@@ -21,14 +21,14 @@ The high-level direction remains:
 Completed:
 
 - host function inventory and syscall-family classification
-- ABI notes in [`/Users/xulixin/LX_OS/docs/ABI.md`](/Users/xulixin/LX_OS/docs/ABI.md)
+- ABI notes in [`docs/ABI.md`](docs/ABI.md)
 - first Pebble kernel/module split
 
 Key files:
 
-- [`/Users/xulixin/LX_OS/docs/ABI.md`](/Users/xulixin/LX_OS/docs/ABI.md)
-- [`/Users/xulixin/LX_OS/pebble_system/kernel/syscall.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/syscall.peb)
-- [`/Users/xulixin/LX_OS/pebble_system/lib/base.peb`](/Users/xulixin/LX_OS/pebble_system/lib/base.peb)
+- [`docs/ABI.md`](docs/ABI.md)
+- [`pebble_system/kernel/syscall.peb`](pebble_system/kernel/syscall.peb)
+- [`pebble_system/lib/base.peb`](pebble_system/lib/base.peb)
 
 #### Phase 1: Pebble kernel split and stable runtime ABI
 
@@ -38,13 +38,13 @@ Completed in transition form:
 - Pebble kernel module entry points for base constants, syscall inventory, and
   process wrappers
 - runtime compatibility exports preserved through
-  [`/Users/xulixin/LX_OS/pebble_system/runtime.peb`](/Users/xulixin/LX_OS/pebble_system/runtime.peb)
+  [`pebble_system/runtime.peb`](pebble_system/runtime.peb)
 
 Key files:
 
-- [`/Users/xulixin/LX_OS/pebble_bootloader/lang.py`](/Users/xulixin/LX_OS/pebble_bootloader/lang.py)
-- [`/Users/xulixin/LX_OS/pebble_system/runtime.peb`](/Users/xulixin/LX_OS/pebble_system/runtime.peb)
-- [`/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb)
+- [`pebble_bootloader/lang.py`](pebble_bootloader/lang.py)
+- [`pebble_system/runtime.peb`](pebble_system/runtime.peb)
+- [`pebble_system/kernel/proc.peb`](pebble_system/kernel/proc.peb)
 
 #### Phase 2: Real process model before more commands
 
@@ -59,9 +59,9 @@ Implemented as a minimal but usable process-model skeleton:
 
 Key files:
 
-- [`/Users/xulixin/LX_OS/docs/PROCESS.md`](/Users/xulixin/LX_OS/docs/PROCESS.md)
-- [`/Users/xulixin/LX_OS/pebble_bootloader/shell.py`](/Users/xulixin/LX_OS/pebble_bootloader/shell.py)
-- [`/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb)
+- [`docs/PROCESS.md`](docs/PROCESS.md)
+- [`pebble_bootloader/shell.py`](pebble_bootloader/shell.py)
+- [`pebble_system/kernel/proc.peb`](pebble_system/kernel/proc.peb)
 
 #### Phase 3: File descriptor, redirection, and pipe layer
 
@@ -112,12 +112,12 @@ Completed in a pragmatic first version:
 
 Key files:
 
-- [`/Users/xulixin/LX_OS/pebble_bootloader/shell.py`](/Users/xulixin/LX_OS/pebble_bootloader/shell.py)
-- [`/Users/xulixin/LX_OS/pebble_system/runtime.peb`](/Users/xulixin/LX_OS/pebble_system/runtime.peb)
-- [`/Users/xulixin/LX_OS/pebble_system/shell.peb`](/Users/xulixin/LX_OS/pebble_system/shell.peb)
-- [`/Users/xulixin/LX_OS/pebble_system/bin/echo.peb`](/Users/xulixin/LX_OS/pebble_system/bin/echo.peb)
-- [`/Users/xulixin/LX_OS/pebble_system/bin/wc.peb`](/Users/xulixin/LX_OS/pebble_system/bin/wc.peb)
-- [`/Users/xulixin/LX_OS/pebble_system/lib/cli.peb`](/Users/xulixin/LX_OS/pebble_system/lib/cli.peb)
+- [`pebble_bootloader/shell.py`](pebble_bootloader/shell.py)
+- [`pebble_system/runtime.peb`](pebble_system/runtime.peb)
+- [`pebble_system/shell.peb`](pebble_system/shell.peb)
+- [`pebble_system/bin/echo.peb`](pebble_system/bin/echo.peb)
+- [`pebble_system/bin/wc.peb`](pebble_system/bin/wc.peb)
+- [`pebble_system/lib/cli.peb`](pebble_system/lib/cli.peb)
 
 ### In Progress
 
@@ -197,5 +197,5 @@ Plan:
 ## Notes
 
 - This document is an execution record, not a frozen spec.
-- ABI details live in [`/Users/xulixin/LX_OS/docs/ABI.md`](/Users/xulixin/LX_OS/docs/ABI.md).
-- Process-model details live in [`/Users/xulixin/LX_OS/docs/PROCESS.md`](/Users/xulixin/LX_OS/docs/PROCESS.md).
+- ABI details live in [`docs/ABI.md`](docs/ABI.md).
+- Process-model details live in [`docs/PROCESS.md`](docs/PROCESS.md).

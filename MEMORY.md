@@ -7,7 +7,7 @@ real process memory.
 
 Python still hosts the interpreter and VM process, but Pebble now exposes its
 own logical runtime memory model through modules implemented in
-[`system/runtime.peb`](/Users/xulixin/LX_OS/pebble_system/runtime.peb).
+[`system/runtime.peb`](pebble_system/runtime.peb).
 
 The current memory stack has three parts:
 
@@ -100,7 +100,7 @@ The point is to give Pebble a real allocation layer that it controls.
 ## Bytecode VM Memory Direction
 
 `exec` mode now uses a more explicit VM state in
-[`lang.py`](/Users/xulixin/LX_OS/pebble_bootloader/lang.py):
+[`lang.py`](pebble_bootloader/lang.py):
 
 - a `value_stack`
 - a `frame_stack`

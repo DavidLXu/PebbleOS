@@ -6,8 +6,8 @@ This document describes how a PebbleOS shell session is created and initialized 
 
 The interactive shell is implemented by the host bootloader plus the Pebble-managed shell runtime:
 
-- host entry: [`/Users/xulixin/LX_OS/pebble_bootloader/shell.py`](/Users/xulixin/LX_OS/pebble_bootloader/shell.py)
-- shell behavior: [`/Users/xulixin/LX_OS/pebble_system/shell.peb`](/Users/xulixin/LX_OS/pebble_system/shell.peb)
+- host entry: [`pebble_bootloader/shell.py`](pebble_bootloader/shell.py)
+- shell behavior: [`pebble_system/shell.peb`](pebble_system/shell.peb)
 
 The host owns terminal and process substrate details. Pebble owns command behavior, help text, launcher policy, and most visible shell semantics.
 

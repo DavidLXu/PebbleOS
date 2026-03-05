@@ -1,0 +1,23 @@
+class Counter:
+    STEP = 2
+
+    def __init__(self, start):
+        self.value = start
+
+    def inc(self):
+        self.value = self.value + STEP
+        return self.value
+
+c = Counter(3)
+print c.inc()      # 5
+print c.value      # 5
+
+m = c.inc          # bound method
+print m()          # 7
+print c.value      # 7
+
+class Math:
+    def twice(x):
+        return x * 2
+
+print Math.twice(5)  # 10

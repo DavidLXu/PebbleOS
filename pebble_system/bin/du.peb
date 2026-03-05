@@ -1,0 +1,143 @@
+def format_size(bytes):
+    if bytes < 1024:
+        return str(bytes)
+    if bytes < 1024 * 1024:
+        return str(bytes / 1024) + "K"
+    if bytes < 1024 * 1024 * 1024:
+        return str(bytes / (1024 * 1024)) + "M"
+    return str(bytes / (1024 * 1024 * 1024)) + "G"
+
+summary_only = 0
+human_readable = 0
+path = ""
+
+arg_idx = 0
+while arg_idx < ARGC:
+    arg = argv(arg_idx)
+    if arg == "-s":
+        summary_only = 1
+    elif arg == "-h":
+        human_readable = 1
+    elif arg == "-sh" or arg == "-hs":
+        summary_only = 1
+        human_readable = 1
+    elif path == "":
+        path = arg
+    else:
+        print "du: only one path supported"
+        path = "__error__"
+    arg_idx = arg_idx + 1
+
+if path != "__error__":
+    names = list_files()
+    prefix = path
+
+    if prefix == "/":
+        prefix = ""
+    elif prefix != "":
+        if prefix[0] == "/":
+            out = ""
+            idx = 1
+            prefix_len = len(prefix)
+            while idx < prefix_len:
+                out = out + prefix[idx]
+                idx = idx + 1
+            prefix = out
+
+    prefix_len = len(prefix)
+
+    if summary_only:
+        total = 0
+        idx = 0
+        num_names = len(names)
+        while idx < num_names:
+            name = names[idx]
+            name_len = len(name)
+            match = 0
+            if prefix_len == 0:
+                match = 1
+            elif name == prefix:
+                match = 1
+            elif name_len > prefix_len:
+                prefix_match = 1
+                pidx = 0
+                while pidx < prefix_len:
+                    if pidx >= name_len:
+                        prefix_match = 0
+                    elif name[pidx] != prefix[pidx]:
+                        prefix_match = 0
+                    pidx = pidx + 1
+                if prefix_match:
+                    after_prefix = name_len - prefix_len
+                    if after_prefix > 0:
+                        next_pos = prefix_len
+                        if next_pos >= 0 and next_pos < name_len:
+                            if name[next_pos] == "/":
+                                match = 1
+            if match:
+                if file_exists(name):
+                    content = read_file(name)
+                    total = total + len(content)
+            idx = idx + 1
+        if human_readable:
+            print format_size(total) + "\t" + path
+        else:
+            print str(total) + "\t" + path
+    else:
+        if prefix_len == 0:
+            idx = 0
+            num_names = len(names)
+            while idx < num_names:
+                name = names[idx]
+                has_slash = 0
+                j = 0
+                name_len = len(name)
+                while j < name_len:
+                    if name[j] == "/":
+                        has_slash = 1
+                    j = j + 1
+                if has_slash == 0:
+                    size = 0
+                    if file_exists(name):
+                        content = read_file(name)
+                        size = len(content)
+                    if human_readable:
+                        print format_size(size) + "\t" + name
+                    else:
+                        print str(size) + "\t" + name
+                idx = idx + 1
+        else:
+            total = 0
+            idx = 0
+            num_names = len(names)
+            while idx < num_names:
+                name = names[idx]
+                name_len = len(name)
+                match = 0
+                if name == prefix:
+                    match = 1
+                elif name_len > prefix_len:
+                    prefix_match = 1
+                    pidx = 0
+                    while pidx < prefix_len:
+                        if pidx >= name_len:
+                            prefix_match = 0
+                        elif name[pidx] != prefix[pidx]:
+                            prefix_match = 0
+                        pidx = pidx + 1
+                    if prefix_match:
+                        after_prefix = name_len - prefix_len
+                        if after_prefix > 0:
+                            next_pos = prefix_len
+                            if next_pos >= 0 and next_pos < name_len:
+                                if name[next_pos] == "/":
+                                    match = 1
+                if match:
+                    if file_exists(name):
+                        content = read_file(name)
+                        total = total + len(content)
+                idx = idx + 1
+            if human_readable:
+                print format_size(total) + "\t" + path
+            else:
+                print str(total) + "\t" + path

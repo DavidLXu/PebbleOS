@@ -5,7 +5,7 @@
 Pebble OS exposes a unified Pebble-side filesystem API, but it can run on top
 of multiple storage backends.
 
-The public behavior lives in [`system/runtime.peb`](/Users/xulixin/LX_OS/pebble_system/runtime.peb).
+The public behavior lives in [`system/runtime.peb`](pebble_system/runtime.peb).
 Shell commands call Pebble runtime helpers such as:
 
 - `list_files()`
@@ -35,7 +35,7 @@ Pebble supports:
 
 `hostfs` is the direct host-backed mode.
 
-- User files and directories live under [`pebble_disk/`](/Users/xulixin/LX_OS/pebble_disk)
+- User files and directories live under [`pebble_disk/`](pebble_disk)
 - Python and the host OS can inspect them directly
 - `run` and `nano` operate on real host files
 - This is the fastest and simplest mode
@@ -49,7 +49,7 @@ Use `hostfs` when you want speed, easy debugging, and transparent host files.
 - The session starts from an empty Pebble-managed filesystem
 - User files and directories live only in memory during the session
 - The VFS backing image is intercepted by the bootloader and kept in memory
-- Nothing is written to [`pebble_disk/`](/Users/xulixin/LX_OS/pebble_disk) unless you explicitly run `sync`
+- Nothing is written to [`pebble_disk/`](pebble_disk) unless you explicitly run `sync`
 
 Use `mfs` when you want a fast Pebble-native filesystem without automatic
 persistence.
@@ -122,7 +122,7 @@ Pebble OS exposes a runtime-level `sync` command for memory filesystems.
 
 - `sync` is available in `mfs` and `mfs-import`
 - It writes the current in-memory filesystem snapshot into `.__pebble_vfs__.db`
-- It does not merge back into ordinary host files under [`pebble_disk/`](/Users/xulixin/LX_OS/pebble_disk)
+- It does not merge back into ordinary host files under [`pebble_disk/`](pebble_disk)
 
 This makes persistence explicit instead of automatic.
 
@@ -173,7 +173,7 @@ or feed into the Pebble VFS layer.
 
 `system/...` remains special.
 
-- Runtime files under [`pebble_system/`](/Users/xulixin/LX_OS/pebble_system) are mounted as `system/...`
+- Runtime files under [`pebble_system/`](pebble_system) are mounted as `system/...`
 - They are used for bootstrapping and core system behavior
 - Even in `mfs`, `mfs-import`, and VFS modes, these files remain host-backed
 
@@ -206,7 +206,7 @@ still storing everything in a simple Pebble-managed backing database.
 
 Filesystem behavior is split across two layers:
 
-- [`pebble_bootloader/`](/Users/xulixin/LX_OS/pebble_bootloader) provides raw host operations, mount handling, and the in-memory interception used by `mfs` and `mfs-import`
-- [`system/runtime.peb`](/Users/xulixin/LX_OS/pebble_system/runtime.peb) defines the Pebble-visible filesystem API, path normalization, VFS logic, and mode selection
+- [`pebble_bootloader/`](pebble_bootloader) provides raw host operations, mount handling, and the in-memory interception used by `mfs` and `mfs-import`
+- [`system/runtime.peb`](pebble_system/runtime.peb) defines the Pebble-visible filesystem API, path normalization, VFS logic, and mode selection
 
 This keeps the Python layer small while moving filesystem policy into Pebble.

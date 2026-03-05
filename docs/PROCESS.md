@@ -9,7 +9,7 @@ with two host-backed execution forms:
 - host-managed background worker jobs
 
 Milestone 1 adds a Pebble-visible transition layer in
-[`/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb`](/Users/xulixin/LX_OS/pebble_system/kernel/proc.peb)
+[`pebble_system/kernel/proc.peb`](pebble_system/kernel/proc.peb)
 so shell commands stop depending directly on raw host function names.
 
 ## Pebble Process Context Shape

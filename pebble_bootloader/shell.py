@@ -136,6 +136,7 @@ class PebbleShell(cmd.Cmd):
         self._active_stderr_fd: int | None = None
         self._fd_table: dict[int, dict[str, object]] = {}
         self._next_fd = 3
+        self._pebble_repl: PebbleInterpreter | None = None
         self._detach_requested = threading.Event()
         self._main_thread_id = threading.get_ident()
         self._terminal_owner_thread_id: int | None = None
@@ -614,6 +615,9 @@ class PebbleShell(cmd.Cmd):
                 "capture_text": self._host_capture_text,
                 "run_program": self._host_run_program,
                 "exec_program": self._host_exec_program,
+                "pebble_repl_start": self._host_pebble_repl_start,
+                "pebble_repl_step": self._host_pebble_repl_step,
+                "pebble_repl_stop": self._host_pebble_repl_stop,
                 "start_background_job": self._host_start_background_job,
                 "list_background_jobs": self._host_list_background_jobs,
                 "list_processes": self._host_list_processes,
@@ -673,6 +677,7 @@ class PebbleShell(cmd.Cmd):
                 "term_mode": self._host_term_mode,
                 "term_state": self._host_term_state,
                 "current_time": self._host_current_time,
+                "sleep": self._host_sleep,
                 "runtime_error": self._host_runtime_error,
             },
         )
@@ -1112,6 +1117,54 @@ class PebbleShell(cmd.Cmd):
             self._run_program(args[0], argv, exec_mode="bytecode")
         except (FileSystemError, PebbleError) as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
+        return 0
+
+    def _start_pebble_repl(self) -> None:
+        env_map = dict(self._runtime_env_override or self.env)
+        initial_globals: dict[str, object] = {
+            "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
+            "FS_MODE": self.fs_mode,
+            "CWD": self.cwd,
+            "ENV": env_map,
+            "PATH": env_map.get("PATH", ""),
+        }
+        runtime = self._make_runtime(consume_output=False)
+        interpreter = PebbleInterpreter(
+            self.fs.root,
+            input_provider=self._runtime_input,
+            output_consumer=self._emit_runtime_output,
+            path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, self.cwd)),
+            host_functions=runtime.host_functions,
+        )
+        runtime_source = self.fs.read_file("system/runtime.peb")
+        interpreter.start_repl_session(initial_globals=initial_globals)
+        interpreter.execute_repl_line(runtime_source)
+        self._pebble_repl = interpreter
+
+    def _host_pebble_repl_start(self, args: list[object], line_number: int) -> int:
+        if args:
+            raise PebbleError(f"line {line_number}: pebble_repl_start() expected 0 arguments but got {len(args)}")
+        try:
+            self._start_pebble_repl()
+        except (FileSystemError, PebbleError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+        return 0
+
+    def _host_pebble_repl_step(self, args: list[object], line_number: int) -> int:
+        if len(args) != 1 or not isinstance(args[0], str):
+            raise PebbleError(f"line {line_number}: pebble_repl_step() expects 1 string argument")
+        try:
+            if self._pebble_repl is None:
+                self._start_pebble_repl()
+            self._pebble_repl.execute_repl_line(args[0])
+        except (FileSystemError, PebbleError) as exc:
+            raise PebbleError(f"line {line_number}: {exc}") from exc
+        return 0
+
+    def _host_pebble_repl_stop(self, args: list[object], line_number: int) -> int:
+        if args:
+            raise PebbleError(f"line {line_number}: pebble_repl_stop() expected 0 arguments but got {len(args)}")
+        self._pebble_repl = None
         return 0
 
     def _host_start_background_job(self, args: list[object], line_number: int) -> int:
@@ -2099,6 +2152,14 @@ class PebbleShell(cmd.Cmd):
         if args:
             raise PebbleError(f"line {line_number}: current_time() expected 0 arguments but got {len(args)}")
         return datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
+
+    def _host_sleep(self, args: list[object], line_number: int) -> int:
+        if len(args) != 1:
+            raise PebbleError(f"line {line_number}: sleep() expected 1 argument but got {len(args)}")
+        if not isinstance(args[0], int):
+            raise PebbleError(f"line {line_number}: sleep() expects an integer (milliseconds)")
+        time.sleep(args[0] / 1000.0)
+        return 0
 
     def _host_runtime_error(self, args: list[object], line_number: int) -> int:
         message = self._require_string_arg("runtime_error", args, line_number, 1)

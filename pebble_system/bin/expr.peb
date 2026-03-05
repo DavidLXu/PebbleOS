@@ -1,0 +1,149 @@
+def is_numeric(text):
+    i = 0
+    if len(text) == 0:
+        return 0
+    if text[0] == "-":
+        i = 1
+    if i >= len(text):
+        return 0
+    while i < len(text):
+        ch = text[i]
+        if ch < "0" or ch > "9":
+            return 0
+        i = i + 1
+    return 1
+
+def to_int(text):
+    result = 0
+    sign = 1
+    i = 0
+    if len(text) > 0 and text[0] == "-":
+        sign = -1
+        i = 1
+    while i < len(text):
+        ch = text[i]
+        digit = 0
+        if ch == "0":
+            digit = 0
+        elif ch == "1":
+            digit = 1
+        elif ch == "2":
+            digit = 2
+        elif ch == "3":
+            digit = 3
+        elif ch == "4":
+            digit = 4
+        elif ch == "5":
+            digit = 5
+        elif ch == "6":
+            digit = 6
+        elif ch == "7":
+            digit = 7
+        elif ch == "8":
+            digit = 8
+        elif ch == "9":
+            digit = 9
+        result = result * 10 + digit
+        i = i + 1
+    return sign * result
+
+def eval_expr(operands, operators):
+    i = 0
+    while i < len(operators):
+        if operators[i] == "*" or operators[i] == "/":
+            left = to_int(operands[i])
+            right = to_int(operands[i + 1])
+            result = 0
+            if operators[i] == "*":
+                result = left * right
+            elif operators[i] == "/":
+                if right == 0:
+                    print "expr: division by zero"
+                    return []
+                result = left / right
+            new_operands = []
+            j = 0
+            while j < i:
+                append(new_operands, operands[j])
+                j = j + 1
+            append(new_operands, str(result))
+            j = i + 2
+            while j < len(operands):
+                append(new_operands, operands[j])
+                j = j + 1
+            new_operators = []
+            j = 0
+            while j < i:
+                append(new_operators, operators[j])
+                j = j + 1
+            j = i + 1
+            while j < len(operators):
+                append(new_operators, operators[j])
+                j = j + 1
+            operands = new_operands
+            operators = new_operators
+        else:
+            i = i + 1
+    i = 0
+    while i < len(operators):
+        left = to_int(operands[i])
+        right = to_int(operands[i + 1])
+        result = 0
+        if operators[i] == "+":
+            result = left + right
+        elif operators[i] == "-":
+            result = left - right
+        else:
+            print "expr: unknown operator"
+            return []
+        new_operands = []
+        j = 0
+        while j < i:
+            append(new_operands, operands[j])
+            j = j + 1
+        append(new_operands, str(result))
+        j = i + 2
+        while j < len(operands):
+            append(new_operands, operands[j])
+            j = j + 1
+        new_operators = []
+        j = 0
+        while j < i:
+            append(new_operators, operators[j])
+            j = j + 1
+        j = i + 1
+        while j < len(operators):
+            append(new_operators, operators[j])
+            j = j + 1
+        operands = new_operands
+        operators = new_operators
+    return operands
+
+if ARGC == 0:
+    print "expr: missing expression"
+else:
+    operands = []
+    operators = []
+    expect_operand = 1
+    i = 0
+    while i < ARGC:
+        token = argv(i)
+        if expect_operand:
+            append(operands, token)
+            expect_operand = 0
+        else:
+            if token == "+" or token == "-" or token == "*" or token == "/":
+                append(operators, token)
+                expect_operand = 1
+            else:
+                print "expr: syntax error"
+                operands = []
+                i = ARGC
+        i = i + 1
+    if len(operands) > 0:
+        if len(operands) != len(operators) + 1:
+            print "expr: syntax error"
+        else:
+            result = eval_expr(operands, operators)
+            if len(result) == 1:
+                print result[0]

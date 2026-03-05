@@ -9,8 +9,21 @@ def rest(items):
 def resolved_path(name):
     return storage_name(normalize_path(name))
 
+def run_repl():
+    print "Pebble REPL"
+    print "Type Pebble statements. Use 'exit' or 'quit' to leave."
+    pebble_repl_start()
+    while 1:
+        line = input("pebble> ")
+        if line == "exit" or line == "quit":
+            break
+        if line == "":
+            continue
+        pebble_repl_step(line)
+    pebble_repl_stop()
+
 if ARGC == 0:
-    print "usage: pebble FILE [ARGS...]"
+    run_repl()
 else:
     program = resolved_path(argv(0))
     if file_exists(program) == 0:

@@ -1,1 +1,2 @@
-export PROFILE_FLAG=loaded
+# Pebble OS login profile
+export PATH=/system/bin:/system/sbin:/bin

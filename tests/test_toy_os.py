@@ -113,6 +113,13 @@ class PebbleInterpreterTests(unittest.TestCase):
         with self.assertRaises(PebbleError):
             PebbleInterpreter().execute("print missing")
 
+    def test_repl_line_execution_persists_globals(self) -> None:
+        interpreter = PebbleInterpreter()
+        interpreter.start_repl_session()
+        interpreter.execute_repl_line("a = 1")
+        output = interpreter.execute_repl_line("print a")
+        self.assertEqual(output, ["1"])
+
     def test_interpreter_supports_minimal_try_except(self) -> None:
         output = PebbleInterpreter().execute(
             "\n".join(
@@ -460,7 +467,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["14"])
 
     def test_runtime_math_helpers_work_in_pebble(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -484,7 +491,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["7", "81", "3", "5000", "5000", "10000"])
 
     def test_import_math_supports_module_style_calls(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -506,7 +513,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["7", "3", "5000"])
 
     def test_import_text_random_and_os_modules(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         with tempfile.TemporaryDirectory() as temp_dir:
             output = PebbleInterpreter(
                 Path(temp_dir),
@@ -549,8 +556,53 @@ class PebbleInterpreterTests(unittest.TestCase):
             )
         self.assertEqual(output, ["alpha", "xxx", "2", "7", "3", "hi", "1", "hi"])
 
+    def test_runtime_base_module_exposes_release_version(self) -> None:
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
+        output = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
+            host_functions={
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+            },
+        ).execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    "import system.lib.base",
+                    "print system.lib.base.os_release()",
+                    "print system.lib.base.os_version()",
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["0.1.0", "Pebble OS 0.1.0"])
+
+    def test_version_and_uname_commands_report_current_release(self) -> None:
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
+        version_source = Path("pebble_system/bin/version.peb").read_text(encoding="utf-8")
+        uname_source = Path("pebble_system/bin/uname.peb").read_text(encoding="utf-8")
+        host_functions = {
+            "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+        }
+        version_out = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
+            host_functions=host_functions,
+        ).execute(
+            runtime_source + "\n" + version_source,
+            initial_globals={"FS_MODE": "hostfs", "ARGV": [], "ARGC": 0},
+        )
+        self.assertEqual(version_out, ["0.1.0"])
+        uname_out = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
+            host_functions=host_functions,
+        ).execute(
+            runtime_source + "\n" + uname_source,
+            initial_globals={"FS_MODE": "hostfs", "ARGV": ["-r"], "ARGC": 1},
+        )
+        self.assertEqual(uname_out, ["0.1.0"])
+
     def test_import_memory_module_provides_virtual_ram(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -579,7 +631,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["8", "0", "3", "42", "42", "8", "7", "8", "0"])
 
     def test_import_memory_module_supports_block_operations(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -604,7 +656,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["[4, 5, 6]", "3", "[4, 5, 6]", "[4, 5, 6, 4, 5, 6]"])
 
     def test_import_memory_module_supports_marks_moves_and_compare(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -635,7 +687,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["4", "[1, 2, 1, 2, 3, 4]", "0", "0", "2", "0", "0", "3", "[0, 0, 0, 2]"])
 
     def test_import_heap_module_allocates_objects(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -665,7 +717,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["12", "0", "pair", "2", "7", "9", "9", "[7, 9]", "4", "1"])
 
     def test_import_heap_module_supports_marks_and_reset(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -743,6 +795,60 @@ class PebbleInterpreterTests(unittest.TestCase):
             )
         self.assertEqual(output, ["5", "12"])
 
+    def test_supports_class_instances_methods_and_bound_methods(self) -> None:
+        source = "\n".join(
+            [
+                "class Counter:",
+                "    STEP = 2",
+                "    def __init__(self, start):",
+                "        self.value = start",
+                "    def inc(self):",
+                "        self.value = self.value + STEP",
+                "        return self.value",
+                "",
+                "c = Counter(3)",
+                "print c.inc()",
+                "print c.value",
+                "m = c.inc",
+                "print m()",
+                "print c.value",
+                "",
+                "class Math:",
+                "    def twice(x):",
+                "        return x * 2",
+                "print Math.twice(5)",
+            ]
+        )
+        output = PebbleInterpreter().execute(source)
+        self.assertEqual(output, ["5", "5", "7", "7", "10"])
+
+    def test_bytecode_mode_supports_class_instances_methods_and_bound_methods(self) -> None:
+        source = "\n".join(
+            [
+                "class Counter:",
+                "    STEP = 2",
+                "    def __init__(self, start):",
+                "        self.value = start",
+                "    def inc(self):",
+                "        self.value = self.value + STEP",
+                "        return self.value",
+                "",
+                "c = Counter(3)",
+                "print c.inc()",
+                "print c.value",
+                "m = c.inc",
+                "print m()",
+                "print c.value",
+                "",
+                "class Math:",
+                "    def twice(x):",
+                "        return x * 2",
+                "print Math.twice(5)",
+            ]
+        )
+        output = PebbleBytecodeInterpreter().execute(source)
+        self.assertEqual(output, ["5", "5", "7", "7", "10"])
+
     def test_bytecode_mode_runs_basic_program(self) -> None:
         source = "\n".join(
             [
@@ -770,7 +876,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["3.5", "7.0", "1.75"])
 
     def test_bytecode_mode_supports_import_math(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleBytecodeInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -791,7 +897,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["5000", "10000"])
 
     def test_bytecode_mode_supports_import_text_and_random(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleBytecodeInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -813,8 +919,27 @@ class PebbleInterpreterTests(unittest.TestCase):
         )
         self.assertEqual(output, ["a\nb", "7", "3"])
 
+    def test_import_numpy_and_torch_resolve_from_system_lib_without_disk_shims(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = PebbleInterpreter(
+                Path(temp_dir),
+                path_resolver=lambda name: resolve_repo_system_path(name)
+                if name.startswith("system/")
+                else Path(temp_dir) / name,
+            ).execute(
+                "\n".join(
+                    [
+                        "import numpy",
+                        "import torch",
+                        "print numpy.sum([1, 2, 3])",
+                        "print torch.shape([1, 2, 3])",
+                    ]
+                )
+            )
+        self.assertEqual(output, ["6", "[3]"])
+
     def test_bytecode_mode_supports_import_memory(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleBytecodeInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -838,8 +963,27 @@ class PebbleInterpreterTests(unittest.TestCase):
         )
         self.assertEqual(output, ["4", "0", "1.5", "1.5", "2"])
 
+    def test_bytecode_mode_import_numpy_and_torch_resolve_from_system_lib_without_disk_shims(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = PebbleBytecodeInterpreter(
+                Path(temp_dir),
+                path_resolver=lambda name: resolve_repo_system_path(name)
+                if name.startswith("system/")
+                else Path(temp_dir) / name,
+            ).execute(
+                "\n".join(
+                    [
+                        "import numpy",
+                        "import torch",
+                        "print numpy.sum([1, 2, 3])",
+                        "print torch.shape([1, 2, 3])",
+                    ]
+                )
+            )
+        self.assertEqual(output, ["6", "[3]"])
+
     def test_bytecode_mode_supports_memory_blocks_and_heap(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleBytecodeInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -867,7 +1011,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["3", "[1, 2, 3]", "10", "3", "[8, 9, 10]"])
 
     def test_bytecode_mode_supports_memory_marks_and_heap_reset(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         output = PebbleBytecodeInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -1006,8 +1150,8 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["8", "8"])
 
     def test_system_nano_runs_with_terminal_bridge(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
-        nano_source = Path("/Users/xulixin/LX_OS/pebble_system/nano.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
+        nano_source = Path("pebble_system/nano.peb").read_text(encoding="utf-8")
         rendered: list[str] = []
         keys = iter(["^X"])
         next_fd = {"value": 3}
@@ -1071,7 +1215,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertTrue(rendered)
 
     def test_runtime_exposes_timed_key_reads(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         interpreter = PebbleInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -1085,7 +1229,7 @@ class PebbleInterpreterTests(unittest.TestCase):
         self.assertEqual(output, ["LEFT"])
 
     def test_runtime_exposes_tty_state_wrappers(self) -> None:
-        runtime_source = Path("/Users/xulixin/LX_OS/pebble_system/runtime.peb").read_text(encoding="utf-8")
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
         interpreter = PebbleInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions={
@@ -2007,6 +2151,39 @@ class PebbleShellRuntimeTests(unittest.TestCase):
             shell.onecmd("help echo")
         self.assertIn("echo [args...]", outputs)
         self.assertIn("external command from /system/bin/echo.peb", outputs)
+
+    def test_gcc_compiles_minimal_c_subset_to_pebble(self) -> None:
+        shell = build_shell()
+        source = shell.fs.resolve_path("mini.c")
+        compiled = shell.fs.resolve_path("mini.peb")
+        source.write_text(
+            "\n".join(
+                [
+                    "int main() {",
+                    "    int a = 2;",
+                    "    int b = 5;",
+                    "    int c = a * b + 1;",
+                    '    printf("%d\\n", c);',
+                    "    return c;",
+                    "}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        outputs: list[str] = []
+        try:
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("gcc mini.c -o mini.peb")
+                shell.onecmd("exec mini.peb")
+        finally:
+            if source.exists():
+                source.unlink()
+            if compiled.exists():
+                compiled.unlink()
+
+        self.assertIn("gcc: wrote mini.peb", outputs)
+        self.assertIn("11", outputs)
 
     def test_wc_counts_file_contents(self) -> None:
         shell = build_shell()

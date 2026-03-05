@@ -63,8 +63,11 @@ def command_help(args):
         print "  source FILE     run shell commands from a file in the current shell"
         print "  preferred run   COMMAND [ARGS...] or COMMAND &"
         print "  external tools  ls, pwd, mkdir, rmdir, time, sync, touch"
-        print "                  edit, cat, head, tail, rm, cp, mv"
-        print "                  echo, wc, lang, env, which, find, grep, kill, top, htop, sh, bash"
+        print "                  edit, cat, head, tail, rm, cp, mv, stat, cmp, tee"
+        print "                  echo, wc, lang, gcc, env, which, find, grep, sort, uniq"
+        print "                  kill, top, htop, ps, sh, bash, tty, tree"
+        print "                  test, expr, dirname, basename, true, false, yes"
+        print "                  date, hostname, uname, version, sleep, du"
         print "                  from PATH: " + current_path()
         print "  cmd &           run external commands and Pebble programs in background"
         print "  >, >>, <        shell redirection for single commands"
@@ -130,6 +133,9 @@ def command_help(args):
     elif topic == "source":
         print "source FILE"
         print "execute shell commands from FILE in the current shell"
+    elif topic == "rm":
+        print "rm FILE [FILE ...]"
+        print "remove one or more files; continues deleting even if one file fails"
     elif topic == "exit":
         print "exit"
         print "leave Pebble OS"

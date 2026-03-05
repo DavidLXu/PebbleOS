@@ -1,0 +1,15 @@
+if ARGC != 2:
+    print "cmp: exactly two file arguments required"
+else:
+    name1 = argv(0)
+    name2 = argv(1)
+    if not file_exists(name1):
+        print "cmp: " + name1 + ": No such file or directory"
+    elif not file_exists(name2):
+        print "cmp: " + name2 + ": No such file or directory"
+    else:
+        content1 = read_file(name1)
+        content2 = read_file(name2)
+        if content1 != content2:
+            print "cmp: files differ"
+        # Success - implicit

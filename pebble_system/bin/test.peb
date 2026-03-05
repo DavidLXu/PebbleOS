@@ -1,0 +1,239 @@
+def is_numeric(text):
+    i = 0
+    if len(text) == 0:
+        return 0
+    if text[0] == "-":
+        i = 1
+    if i >= len(text):
+        return 0
+    while i < len(text):
+        ch = text[i]
+        if ch < "0" or ch > "9":
+            return 0
+        i = i + 1
+    return 1
+
+def to_int(text):
+    result = 0
+    sign = 1
+    i = 0
+    if text[0] == "-":
+        sign = -1
+        i = 1
+    while i < len(text):
+        ch = text[i]
+        digit = 0
+        if ch == "0":
+            digit = 0
+        elif ch == "1":
+            digit = 1
+        elif ch == "2":
+            digit = 2
+        elif ch == "3":
+            digit = 3
+        elif ch == "4":
+            digit = 4
+        elif ch == "5":
+            digit = 5
+        elif ch == "6":
+            digit = 6
+        elif ch == "7":
+            digit = 7
+        elif ch == "8":
+            digit = 8
+        elif ch == "9":
+            digit = 9
+        result = result * 10 + digit
+        i = i + 1
+    return sign * result
+
+def strcmp(a, b):
+    i = 0
+    while i < len(a) and i < len(b):
+        if a[i] < b[i]:
+            return -1
+        if a[i] > b[i]:
+            return 1
+        i = i + 1
+    if len(a) < len(b):
+        return -1
+    if len(a) > len(b):
+        return 1
+    return 0
+
+def eval_unary(op, operand):
+    if op == "-z":
+        return len(operand) == 0
+    if op == "-n":
+        return len(operand) > 0
+    if op == "-e":
+        return file_exists(operand)
+    if op == "-f":
+        return file_exists(operand)
+    if op == "-d":
+        return directory_exists(operand)
+    if op == "-r":
+        return file_exists(operand)
+    if op == "-w":
+        return file_exists(operand)
+    if op == "-x":
+        return file_exists(operand)
+    if op == "-s":
+        if not file_exists(operand):
+            return 0
+        return len(read_file(operand)) > 0
+    return 0
+
+def unary_supported(op):
+    if op == "-z":
+        return 1
+    if op == "-n":
+        return 1
+    if op == "-e":
+        return 1
+    if op == "-f":
+        return 1
+    if op == "-d":
+        return 1
+    if op == "-r":
+        return 1
+    if op == "-w":
+        return 1
+    if op == "-x":
+        return 1
+    if op == "-s":
+        return 1
+    return 0
+
+def eval_binary(left, op, right):
+    if op == "=" or op == "==":
+        return left == right
+    if op == "!=":
+        return left != right
+    if is_numeric(left) and is_numeric(right):
+        li = to_int(left)
+        ri = to_int(right)
+        if op == "-eq":
+            return li == ri
+        if op == "-ne":
+            return li != ri
+        if op == "-lt":
+            return li < ri
+        if op == "-le":
+            return li <= ri
+        if op == "-gt":
+            return li > ri
+        if op == "-ge":
+            return li >= ri
+    if op == "-eq":
+        return left == right
+    if op == "-ne":
+        return left != right
+    if op == "-lt":
+        return strcmp(left, right) < 0
+    if op == "-le":
+        return strcmp(left, right) <= 0
+    if op == "-gt":
+        return strcmp(left, right) > 0
+    if op == "-ge":
+        return strcmp(left, right) >= 0
+    return 0
+
+def binary_supported(op):
+    if op == "=" or op == "==":
+        return 1
+    if op == "!=":
+        return 1
+    if op == "-eq":
+        return 1
+    if op == "-ne":
+        return 1
+    if op == "-lt":
+        return 1
+    if op == "-le":
+        return 1
+    if op == "-gt":
+        return 1
+    if op == "-ge":
+        return 1
+    return 0
+
+def print_help():
+    print "usage: test [-p|--print] [!] EXPRESSION"
+    print "forms:"
+    print "  test STRING"
+    print "  test UNARY_OP VALUE"
+    print "  test LEFT BINARY_OP RIGHT"
+    print "unary ops: -z -n -e -f -d -r -w -x -s"
+    print "binary ops: = == != -eq -ne -lt -le -gt -ge"
+    print "flags:"
+    print "  -p, --print   print true/false for interactive use"
+    print "  !             negate the final result"
+
+result = 0
+print_result = 0
+invert = 0
+arg_start = 0
+invalid = 0
+
+if ARGC > 0 and (argv(0) == "--help" or argv(0) == "-h"):
+    print_help()
+else:
+    while arg_start < ARGC:
+        token = argv(arg_start)
+        if token == "-p" or token == "--print":
+            print_result = 1
+            arg_start = arg_start + 1
+        elif token == "!":
+            if invert:
+                invert = 0
+            else:
+                invert = 1
+            arg_start = arg_start + 1
+        else:
+            break
+
+    expr_count = ARGC - arg_start
+    if expr_count == 0:
+        result = 0
+    elif expr_count == 1:
+        result = len(argv(arg_start)) > 0
+    elif expr_count == 2:
+        op = argv(arg_start)
+        operand = argv(arg_start + 1)
+        if unary_supported(op):
+            result = eval_unary(op, operand)
+        else:
+            print "test: unknown unary operator: " + op
+            invalid = 1
+            result = 0
+    elif expr_count == 3:
+        left = argv(arg_start)
+        op = argv(arg_start + 1)
+        right = argv(arg_start + 2)
+        if binary_supported(op):
+            result = eval_binary(left, op, right)
+        else:
+            print "test: unknown binary operator: " + op
+            invalid = 1
+            result = 0
+    else:
+        print "test: too many arguments"
+        invalid = 1
+        result = 0
+
+    if invert:
+        if result:
+            result = 0
+        else:
+            result = 1
+
+    if print_result and invalid == 0:
+        if result:
+            print "true"
+        else:
+            print "false"
+
+# test returns silently - success or failure is indicated by exit status
+# Since Pebble doesn't support top-level return, we just complete silently
+# The result variable holds the test result (1 = true, 0 = false)

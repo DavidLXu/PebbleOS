@@ -29,4 +29,4 @@ All three should be updated in one change when cutting a release.
 
 ## Current Baseline
 
-- Initial release baseline is `0.1.0`.
+- Current release baseline is `0.1.1`.

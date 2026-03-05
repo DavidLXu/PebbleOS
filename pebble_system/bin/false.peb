@@ -1,0 +1,4 @@
+# false - always fails
+# Since Pebble doesn't support top-level return to set exit code,
+# we silently complete (limitation of Pebble runtime)
+# User should check output or use another mechanism to detect failure

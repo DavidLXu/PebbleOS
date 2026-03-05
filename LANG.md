@@ -18,6 +18,7 @@ Pebble currently supports:
 
 - `name = expression`
 - `items[index] = expression`
+- `obj.attr = expression`
 - `print expression`
 - `import math`
 - `import os`
@@ -25,6 +26,8 @@ Pebble currently supports:
 - `import random`
 - `import memory`
 - `import heap`
+- `import numpy` (file module in default Pebble disk)
+- `import torch` (file module in default Pebble disk)
 - `pass`
 - `break`
 - `continue`
@@ -34,6 +37,7 @@ Pebble currently supports:
 - `while expression:`
 - `for name in range(...):`
 - `def name(arg1, arg2):`
+- `class Name:`
 - `return expression`
 - `raise expression`
 - `try: ... except:`
@@ -53,6 +57,7 @@ Pebble expressions support:
 - function values
 - function calls
 - module-qualified calls like `math.sin(...)`
+- class/instance attribute calls like `obj.method(...)`
 - indexing
 - parentheses
 - `+`
@@ -119,6 +124,8 @@ Current built-in modules:
 - `random`: `seed`, `next`, `range`
 - `memory`: `init`, `size`, `read`, `write`, `clear`, `fill`, `copy`, `slice`, `store`, `dump`, `alloc`, `top`
 - `heap`: `init`, `capacity`, `used`, `count`, `alloc`, `kind`, `size`, `read`, `write`, `store`, `slice`
+- `numpy` (from `system/lib/numpy.peb`, importable as `import numpy`): `array`, `shape`, `ndim`, `size`, `tolist`, `zeros`, `ones`, `full`, `eye`, `reshape`, `transpose`, `add`, `sub`, `mul`, `div`, `dot`, `matmul`, `sum`
+- `torch` (from `system/lib/torch.peb`, importable as `import torch`): `tensor`, `shape`, `ndim`, `size`, `tolist`, `zeros`, `ones`, `full`, `rand`, `randn`, `reshape`, `transpose`, `add`, `sub`, `mul`, `div`, `dot`, `matmul`, `sum`, `argmax`, `argmax_rows`, `one_hot`, `linear`, `mse_loss`, `mse_grad`, `mean_rows`, `sgd`
 
 User modules can also be imported from Pebble files in the active filesystem.
 
@@ -181,7 +188,8 @@ except err:
 - `raise expression` currently raises a plain Pebble runtime error using the stringified value
 - first-class functions currently cover user-defined functions and are intended
   to support bootstrap APIs like `thread_spawn(func, args)`
+- classes now support class bodies, methods, constructors via `__init__`, and bound method values
 - Trigonometric functions use degree input
 - `sin`, `cos`, and `tan` currently return fixed-point integers scaled by `10000`
-- More detailed memory behavior for `memory` and `heap` is documented in [MEMORY.md](/Users/xulixin/LX_OS/MEMORY.md)
-- More detailed filesystem behavior is documented in [FILESYSTEM.md](/Users/xulixin/LX_OS/FILESYSTEM.md)
+- More detailed memory behavior for `memory` and `heap` is documented in [MEMORY.md](MEMORY.md)
+- More detailed filesystem behavior is documented in [FILESYSTEM.md](FILESYSTEM.md)

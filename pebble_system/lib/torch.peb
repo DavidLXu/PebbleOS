@@ -1,0 +1,251 @@
+import system.lib.numpy
+
+def _copy_list(items):
+    out = []
+    i = 0
+    while i < len(items):
+        append(out, items[i])
+        i = i + 1
+    return out
+
+def _int_mod(a, b):
+    if b <= 0:
+        return 0
+    while a < 0:
+        a = a + b
+    while a >= b:
+        a = a - b
+    return a
+
+def _is_tensor(value):
+    try:
+        _shape = value["shape"]
+        _data = value["data"]
+        len(_shape)
+        len(_data)
+        return 1
+    except:
+        return 0
+
+def tensor(value):
+    return system.lib.numpy.array(value)
+
+def shape(value):
+    return system.lib.numpy.shape(value)
+
+def ndim(value):
+    return system.lib.numpy.ndim(value)
+
+def size(value):
+    return system.lib.numpy.size(value)
+
+def tolist(value):
+    return system.lib.numpy.tolist(value)
+
+def zeros(shape_arg):
+    return system.lib.numpy.zeros(shape_arg)
+
+def ones(shape_arg):
+    return system.lib.numpy.ones(shape_arg)
+
+def full(shape_arg, fill_value):
+    return system.lib.numpy.full(shape_arg, fill_value)
+
+def reshape(value, shape_arg):
+    return system.lib.numpy.reshape(value, shape_arg)
+
+def transpose(value):
+    return system.lib.numpy.transpose(value)
+
+def add(a, b):
+    return system.lib.numpy.add(a, b)
+
+def sub(a, b):
+    return system.lib.numpy.sub(a, b)
+
+def mul(a, b):
+    return system.lib.numpy.mul(a, b)
+
+def div(a, b):
+    return system.lib.numpy.div(a, b)
+
+def matmul(a, b):
+    return system.lib.numpy.matmul(a, b)
+
+def dot(a, b):
+    return system.lib.numpy.dot(a, b)
+
+def sum(value):
+    return system.lib.numpy.sum(value)
+
+def argmax(values):
+    vec = values
+    if _is_tensor(values):
+        vec = values["data"]
+    if len(vec) == 0:
+        raise "torch.argmax: empty input"
+    best_idx = 0
+    best_val = vec[0]
+    i = 1
+    while i < len(vec):
+        if vec[i] > best_val:
+            best_val = vec[i]
+            best_idx = i
+        i = i + 1
+    return best_idx
+
+def argmax_rows(value):
+    arr = tensor(value)
+    sh = arr["shape"]
+    if len(sh) != 2:
+        raise "torch.argmax_rows: expected 2D tensor"
+    rows = sh[0]
+    cols = sh[1]
+    out = []
+    i = 0
+    while i < rows:
+        best_j = 0
+        best_val = arr["data"][i * cols]
+        j = 1
+        while j < cols:
+            v = arr["data"][i * cols + j]
+            if v > best_val:
+                best_val = v
+                best_j = j
+            j = j + 1
+        append(out, best_j)
+        i = i + 1
+    return out
+
+def rand(shape_arg):
+    arr = zeros(shape_arg)
+    data = arr["data"]
+    i = 0
+    state = 17
+    while i < len(data):
+        state = _int_mod(state * 73 + 19, 1000000)
+        data[i] = state / 1000000
+        i = i + 1
+    return arr
+
+def randn(shape_arg):
+    arr = zeros(shape_arg)
+    data = arr["data"]
+    i = 0
+    state = 31
+    while i < len(data):
+        state = _int_mod(state * 97 + 29, 2000000)
+        data[i] = (state / 1000000) - 1
+        i = i + 1
+    return arr
+
+def one_hot(labels, classes):
+    out = []
+    i = 0
+    while i < len(labels):
+        row = []
+        c = 0
+        while c < classes:
+            if c == labels[i]:
+                append(row, 1)
+            else:
+                append(row, 0)
+            c = c + 1
+        append(out, row)
+        i = i + 1
+    return tensor(out)
+
+def linear(x, w, b):
+    x_arr = tensor(x)
+    w_arr = tensor(w)
+    b_arr = tensor(b)
+
+    x_shape = x_arr["shape"]
+    w_shape = w_arr["shape"]
+    b_shape = b_arr["shape"]
+
+    if len(x_shape) != 2 or len(w_shape) != 2:
+        raise "torch.linear: expected x and w as 2D tensors"
+    if len(b_shape) != 1:
+        raise "torch.linear: expected b as 1D tensor"
+    if x_shape[1] != w_shape[0]:
+        raise "torch.linear: shape mismatch between x and w"
+    if w_shape[1] != b_shape[0]:
+        raise "torch.linear: shape mismatch between w and b"
+
+    out = matmul(x_arr, w_arr)
+    rows = out["shape"][0]
+    cols = out["shape"][1]
+    i = 0
+    while i < rows:
+        j = 0
+        while j < cols:
+            idx = i * cols + j
+            out["data"][idx] = out["data"][idx] + b_arr["data"][j]
+            j = j + 1
+        i = i + 1
+    return out
+
+def mse_loss(pred, target):
+    p = tensor(pred)
+    t = tensor(target)
+    if len(p["data"]) != len(t["data"]):
+        raise "torch.mse_loss: shape mismatch"
+    total = 0
+    i = 0
+    while i < len(p["data"]):
+        d = p["data"][i] - t["data"][i]
+        total = total + d * d
+        i = i + 1
+    if len(p["data"]) == 0:
+        return 0
+    return total / len(p["data"])
+
+def mse_grad(pred, target):
+    p = tensor(pred)
+    t = tensor(target)
+    if len(p["data"]) != len(t["data"]):
+        raise "torch.mse_grad: shape mismatch"
+    out = {"shape": _copy_list(p["shape"]), "data": _copy_list(p["data"])}
+    n = len(p["data"])
+    if n == 0:
+        return out
+    i = 0
+    while i < n:
+        out["data"][i] = (2 * (p["data"][i] - t["data"][i])) / n
+        i = i + 1
+    return out
+
+def mean_rows(value):
+    arr = tensor(value)
+    sh = arr["shape"]
+    if len(sh) != 2:
+        raise "torch.mean_rows: expected 2D tensor"
+    rows = sh[0]
+    cols = sh[1]
+    out = []
+    j = 0
+    while j < cols:
+        total = 0
+        i = 0
+        while i < rows:
+            total = total + arr["data"][i * cols + j]
+            i = i + 1
+        if rows == 0:
+            append(out, 0)
+        else:
+            append(out, total / rows)
+        j = j + 1
+    return {"shape": [cols], "data": out}
+
+def sgd(param, grad, lr):
+    p = tensor(param)
+    g = tensor(grad)
+    if len(p["data"]) != len(g["data"]):
+        raise "torch.sgd: shape mismatch"
+    out = {"shape": _copy_list(p["shape"]), "data": _copy_list(p["data"])}
+    i = 0
+    while i < len(out["data"]):
+        out["data"][i] = out["data"][i] - lr * g["data"][i]
+        i = i + 1
+    return out

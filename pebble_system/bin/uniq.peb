@@ -1,0 +1,13 @@
+import system.lib.cli
+
+lines = system.lib.cli.split_lines(system.lib.cli.stdin_text())
+
+prev = ""
+first = 1
+i = 0
+while i < len(lines):
+    if first or lines[i] != prev:
+        print lines[i]
+        prev = lines[i]
+        first = 0
+    i = i + 1

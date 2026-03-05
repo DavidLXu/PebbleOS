@@ -188,8 +188,8 @@ What is not fully finished yet:
 
 ## Related Files
 
-- host terminal and scheduler bridge: [`/Users/xulixin/LX_OS/pebble_bootloader/shell.py`](/Users/xulixin/LX_OS/pebble_bootloader/shell.py)
-- shell/login behavior: [`/Users/xulixin/LX_OS/docs/SHELL_LOGIN.md`](/Users/xulixin/LX_OS/docs/SHELL_LOGIN.md)
-- launcher behavior: [`/Users/xulixin/LX_OS/docs/LAUNCHER.md`](/Users/xulixin/LX_OS/docs/LAUNCHER.md)
-- runtime key APIs: [`/Users/xulixin/LX_OS/pebble_system/runtime.peb`](/Users/xulixin/LX_OS/pebble_system/runtime.peb)
-- Pebble editor: [`/Users/xulixin/LX_OS/pebble_system/nano.peb`](/Users/xulixin/LX_OS/pebble_system/nano.peb)
+- host terminal and scheduler bridge: [`pebble_bootloader/shell.py`](pebble_bootloader/shell.py)
+- shell/login behavior: [`docs/SHELL_LOGIN.md`](docs/SHELL_LOGIN.md)
+- launcher behavior: [`docs/LAUNCHER.md`](docs/LAUNCHER.md)
+- runtime key APIs: [`pebble_system/runtime.peb`](pebble_system/runtime.peb)
+- Pebble editor: [`pebble_system/nano.peb`](pebble_system/nano.peb)
