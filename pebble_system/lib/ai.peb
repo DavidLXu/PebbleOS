@@ -1,0 +1,11 @@
+DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant running inside Pebble OS."
+
+def chat_complete(base_url, api_key, model, system_prompt, history_text, prompt, timeout_ms):
+    return ai_chat_complete(base_url, api_key, model, system_prompt, history_text, prompt, str(timeout_ms))
+
+def default_model():
+    return DEFAULT_MODEL
+
+def default_system_prompt():
+    return DEFAULT_SYSTEM_PROMPT

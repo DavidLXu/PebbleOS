@@ -1,0 +1,21 @@
+import system.lib.net
+
+def print_usage():
+    print "usage: fetch URL [OUTFILE]"
+    print "download text over HTTP(S)"
+
+if ARGC == 0:
+    print_usage()
+else:
+    result = system.lib.net.http_get(argv(0))
+    if result["ok"] == 0:
+        print "fetch failed: " + result["error"]
+    else:
+        if result["insecure_tls"]:
+            print "warning: TLS certificate verification failed; using insecure fallback"
+        if ARGC >= 2:
+            write_file(argv(1), result["body"])
+            print "saved " + str(len(result["body"])) + " bytes to " + argv(1)
+            print "status " + str(result["status"]) + " " + result["url"]
+        else:
+            print result["body"]

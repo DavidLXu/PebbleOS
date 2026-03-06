@@ -1,0 +1,29 @@
+import system.lib.net
+
+def print_usage():
+    print "usage: curl URL"
+    print "       curl -o OUTFILE URL"
+    print "download a text HTTP(S) resource"
+
+if ARGC == 0:
+    print_usage()
+elif ARGC == 1:
+    result = system.lib.net.http_get(argv(0))
+    if result["ok"] == 0:
+        print "curl failed: " + result["error"]
+    else:
+        if result["insecure_tls"]:
+            print "warning: TLS certificate verification failed; using insecure fallback"
+        print result["body"]
+elif ARGC == 3 and argv(0) == "-o":
+    result = system.lib.net.http_get(argv(2))
+    if result["ok"] == 0:
+        print "curl failed: " + result["error"]
+    else:
+        if result["insecure_tls"]:
+            print "warning: TLS certificate verification failed; using insecure fallback"
+        write_file(argv(1), result["body"])
+        print "saved " + str(len(result["body"])) + " bytes to " + argv(1)
+        print "status " + str(result["status"]) + " " + result["url"]
+else:
+    print_usage()

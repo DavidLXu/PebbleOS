@@ -1,0 +1,49 @@
+import system.lib.net
+
+def print_usage():
+    print "usage: wget URL [OUTFILE]"
+    print "download a text HTTP(S) resource to a file"
+
+def split_by(text, delimiter):
+    parts = []
+    current = ""
+    i = 0
+    while i < len(text):
+        if text[i] == delimiter:
+            append(parts, current)
+            current = ""
+        else:
+            current = current + text[i]
+        i = i + 1
+    append(parts, current)
+    return parts
+
+def basename_from_url(url):
+    parts = split_by(url, "/")
+    if len(parts) == 0:
+        return "index.html"
+    name = parts[len(parts) - 1]
+    if name == "":
+        return "index.html"
+    q = split_by(name, "?")
+    if len(q) > 0 and q[0] != "":
+        return q[0]
+    return "index.html"
+
+if ARGC == 0:
+    print_usage()
+else:
+    target = ""
+    if ARGC >= 2:
+        target = argv(1)
+    else:
+        target = basename_from_url(argv(0))
+    result = system.lib.net.http_get(argv(0))
+    if result["ok"] == 0:
+        print "wget failed: " + result["error"]
+    else:
+        if result["insecure_tls"]:
+            print "warning: TLS certificate verification failed; using insecure fallback"
+        write_file(target, result["body"])
+        print "saved " + str(len(result["body"])) + " bytes to " + target
+        print "status " + str(result["status"]) + " " + result["url"]

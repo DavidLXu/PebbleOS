@@ -1,2 +1,3 @@
 # Pebble OS login profile
 export PATH=/system/bin:/system/sbin:/bin
+# local secrets or machine-specific overrides go in /etc/profile.local

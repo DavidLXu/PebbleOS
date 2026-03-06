@@ -78,6 +78,7 @@ Pebble expressions support:
 ## Syntax Rules
 
 - Blocks must be indented by exactly four spaces
+- Bracketed expressions inside `()`, `[]`, and `{}` may span multiple lines
 - Comparisons return `1` for true and `0` for false
 - `True`, `False`, and `None` follow Python-style truthiness
 - `dict` values support indexing and assignment with `data[key]`

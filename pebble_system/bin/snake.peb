@@ -1,0 +1,178 @@
+import random
+
+def clamp(value, low, high):
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
+
+def has_body_at(snake, x, y):
+    i = 0
+    while i < len(snake):
+        if snake[i]["x"] == x and snake[i]["y"] == y:
+            return 1
+        i = i + 1
+    return 0
+
+def spawn_food(snake, width, height):
+    attempts = 0
+    while attempts < 200:
+        x = 2 + random.range(0, width - 3)
+        y = 2 + random.range(0, height - 4)
+        if has_body_at(snake, x, y) == 0:
+            return {"x": x, "y": y}
+        attempts = attempts + 1
+    return {"x": 3, "y": 3}
+
+def draw_game(width, height, snake, food, score):
+    clear_screen()
+    move_cursor(1, 1)
+    draw_text("\u001b[01;32mNEON SNAKE\u001b[00m  score " + str(score) + "  WASD/arrows  Q quit")
+    move_cursor(2, 1)
+    draw_text("+" )
+    x = 0
+    while x < width - 2:
+        draw_text("-")
+        x = x + 1
+    draw_text("+")
+
+    row = 0
+    while row < height - 3:
+        move_cursor(row + 3, 1)
+        draw_text("|")
+        col = 0
+        while col < width - 2:
+            draw_text(" ")
+            col = col + 1
+        draw_text("|")
+        row = row + 1
+
+    move_cursor(height, 1)
+    draw_text("+")
+    x = 0
+    while x < width - 2:
+        draw_text("-")
+        x = x + 1
+    draw_text("+")
+
+    move_cursor(food["y"], food["x"])
+    draw_text("\u001b[01;33m*\u001b[00m")
+
+    i = len(snake) - 1
+    while i >= 0:
+        move_cursor(snake[i]["y"], snake[i]["x"])
+        if i == 0:
+            draw_text("\u001b[01;36m@\u001b[00m")
+        else:
+            draw_text("\u001b[01;32mo\u001b[00m")
+        i = i - 1
+
+    flush_screen()
+    return 0
+
+def advance_snake(snake, dx, dy, grow):
+    head = {"x": snake[0]["x"] + dx, "y": snake[0]["y"] + dy}
+    out = [head]
+    i = 0
+    limit = len(snake) - 1
+    if grow:
+        limit = len(snake)
+    while i < limit:
+        append(out, snake[i])
+        i = i + 1
+    return out
+
+random.seed(11)
+
+tty = tty_state()
+interactive = tty["interactive"]
+width = tty["cols"]
+height = tty["rows"]
+if interactive == 0:
+    if width > 40:
+        width = 40
+    if height > 14:
+        height = 14
+
+if width < 26 or height < 12:
+    print "terminal too small for snake"
+else:
+    snake = [{"x": int(width / 2), "y": int(height / 2)}, {"x": int(width / 2) - 1, "y": int(height / 2)}, {"x": int(width / 2) - 2, "y": int(height / 2)}]
+    food = spawn_food(snake, width, height)
+    dx = 1
+    dy = 0
+    score = 0
+    frame = 0
+    running = 1
+    max_frames = 120
+    if interactive == 0:
+        max_frames = 36
+    hide_cursor()
+    while running:
+        tty = tty_state()
+        width = tty["cols"]
+        height = tty["rows"]
+        if interactive == 0:
+            if width > 40:
+                width = 40
+            if height > 14:
+                height = 14
+        if width < 26 or height < 12:
+            running = 0
+        else:
+            draw_game(width, height, snake, food, score)
+            key = ""
+            if interactive:
+                key = read_key_timeout(70)
+            else:
+                if frame >= max_frames:
+                    running = 0
+                if int_mod(frame, 12) == 0:
+                    if dy == 0:
+                        dx = 0
+                        dy = 1
+                    elif dx == 0 and dy == 1:
+                        dx = -1
+                        dy = 0
+                    elif dx == -1:
+                        dx = 0
+                        dy = -1
+                    else:
+                        dx = 1
+                        dy = 0
+            if key == "q" or key == "Q" or key == "ESC":
+                running = 0
+            elif (key == "a" or key == "A" or key == "LEFT") and dx != 1:
+                dx = -1
+                dy = 0
+            elif (key == "d" or key == "D" or key == "RIGHT") and dx != -1:
+                dx = 1
+                dy = 0
+            elif (key == "w" or key == "W" or key == "UP") and dy != 1:
+                dx = 0
+                dy = -1
+            elif (key == "s" or key == "S" or key == "DOWN") and dy != -1:
+                dx = 0
+                dy = 1
+
+            grow = 0
+            next_head_x = snake[0]["x"] + dx
+            next_head_y = snake[0]["y"] + dy
+            if next_head_x <= 1 or next_head_x >= width or next_head_y <= 2 or next_head_y >= height:
+                running = 0
+            elif has_body_at(snake, next_head_x, next_head_y):
+                running = 0
+            else:
+                if next_head_x == food["x"] and next_head_y == food["y"]:
+                    grow = 1
+                    score = score + 1
+                snake = advance_snake(snake, dx, dy, grow)
+                if grow:
+                    food = spawn_food(snake, width, height)
+            frame = frame + 1
+
+    clear_screen()
+    move_cursor(1, 1)
+    show_cursor()
+    print "Neon snake finished."

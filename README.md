@@ -226,9 +226,23 @@ That preparation phase added:
 - fixed `pebble` REPL evaluation state so definitions now persist across input lines (`a=1` then `print a` works in the same REPL session)
 - improved shell UX with Ubuntu-style colored prompt in interactive terminals and colorized `ls` output to distinguish directories and regular files
 - added a Pebble-native text plotting module (`import matplotlib`) and a `gnuplot` CLI command that renders simple ASCII charts from args, files, or piped stdin
+- added a Pebble-native `clear` command that resets the terminal viewport via runtime terminal syscalls and returns to a clean prompt
+- added a shell `history` command backed by host-kept command history, including optional `history N` filtering for recent entries
+- upgraded the Pebble-native `balls` terminal game to use gravity, varied horizontal velocities, wall-bounce physics, and live terminal resize handling
+- added a Pebble-native `starfield` command with colored depth-based rendering, perspective motion, and live terminal resize handling
+- added three more Pebble-native dynamic terminal games: `tunnel` (pseudo-3D racer), `snake` (neon snake), and `rainfire` (rain plus fire particle scene)
+- added a Pebble-native `matrix` command with green falling-code terminal animation inspired by The Matrix, including resize handling and bounded auto-exit
+- added a Pebble-native `welcome` guided tour that greets new users and walks them through navigation, editing, games, processes, and networking step by step
+- promoted the train pass animation into a first-class `train` system command, so users can launch it directly without `run system/train_pass.peb`
+- improved the Pebble parser so bracketed expressions in `()`, `[]`, and `{}` can span multiple lines, which removes a common source of bootstrap-language friction when writing larger system commands
 - added an interactive Pebble `physics` sandbox command with 2D text rendering, configurable gravity/air drag, object collisions, and region materials (`air`, `liquid`, `solid`)
 - fixed `physics` state loss in interactive terminal re-entry paths by persisting world/object state between input cycles, so sequential commands keep previously added objects and filled materials
+- added a first Pebble-visible networking layer with `system.lib.net` plus `ping` (TCP probe) and `fetch` (HTTP GET) userland commands, keeping Python as the host socket substrate rather than exposing raw sockets directly
+- expanded Pebble networking userland with `curl` and `wget` commands layered over `system.lib.net`, including file output support and practical URL-to-filename defaults for downloads
+- added a Pebble `chat` command and `system.lib.ai` wrapper for OpenAI-compatible chat completions, reading `OPENAI_BASE_URL` and `OPENAI_API_KEY` from shell environment rather than hardcoding credentials
+- improved the analog `clock` dial rendering so all twelve hour positions now display numeric labels instead of placeholder `o` markers for non-cardinal hours
 - `ls` now also shows human-readable sizes for both files and directories by default, alongside each entry's timestamp and name
+- added a Pebble-native `clock` command that renders a live analog terminal clock with hour, minute, and second hands using the Pebble-visible TTY drawing primitives
 
 This is the current transition point: PebbleOS is no longer just a bootstrap
 demo, but it is not yet a full modern system either. It now has enough

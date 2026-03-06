@@ -1,0 +1,26 @@
+import system.lib.net
+
+def print_usage():
+    print "usage: ping HOST [PORT]"
+    print "Pebble TCP reachability probe (not raw ICMP)"
+
+if ARGC == 0:
+    print_usage()
+else:
+    host = argv(0)
+    port = 80
+    if ARGC >= 2:
+        port = int(argv(1))
+    lookup = system.lib.net.lookup(host)
+    if lookup["ok"] == 0:
+        print "resolve failed: " + lookup["error"]
+    else:
+        result = system.lib.net.probe(host, port)
+        if result["ok"]:
+            line = "tcp pong " + host + ":" + str(port)
+            if result["address"] != "":
+                line = line + " (" + result["address"] + ")"
+            line = line + " " + str(result["latency_ms"]) + " ms"
+            print line
+        else:
+            print "tcp probe failed: " + result["error"]

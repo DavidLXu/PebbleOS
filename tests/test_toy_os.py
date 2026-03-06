@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import io
 import tempfile
 import termios
 import threading
@@ -108,6 +110,26 @@ class PebbleInterpreterTests(unittest.TestCase):
         )
         output = PebbleInterpreter().execute(source)
         self.assertEqual(output, ["3.5", "7.0", "3.5", "2.25", "3", "1"])
+
+    def test_interpreter_supports_multiline_bracketed_expressions(self) -> None:
+        output = PebbleInterpreter().execute(
+            "\n".join(
+                [
+                    "items = [",
+                    '    "alpha",',
+                    '    "beta",',
+                    "]",
+                    "record = {",
+                    '    "name": "pebble",',
+                    '    "count": len(items),',
+                    "}",
+                    "print items[1]",
+                    'print record["name"]',
+                    'print record["count"]',
+                ]
+            )
+        )
+        self.assertEqual(output, ["beta", "pebble", "2"])
 
     def test_errors_on_unknown_variable(self) -> None:
         with self.assertRaises(PebbleError):
@@ -227,6 +249,27 @@ class PebbleInterpreterTests(unittest.TestCase):
             )
         )
         self.assertEqual(interpreter.run_until_complete(), ["5"])
+
+    def test_bytecode_supports_multiline_bracketed_expressions(self) -> None:
+        interpreter = PebbleBytecodeInterpreter()
+        interpreter.prepare(
+            "\n".join(
+                [
+                    "items = [",
+                    '    "alpha",',
+                    '    "beta",',
+                    "]",
+                    "record = {",
+                    '    "name": "pebble",',
+                    '    "count": len(items),',
+                    "}",
+                    "print items[1]",
+                    'print record["name"]',
+                    'print record["count"]',
+                ]
+            )
+        )
+        self.assertEqual(interpreter.run_until_complete(), ["beta", "pebble", "2"])
 
     def test_supports_functions_for_loops_if_blocks_and_returns(self) -> None:
         source = "\n".join(
@@ -576,6 +619,83 @@ class PebbleInterpreterTests(unittest.TestCase):
             initial_globals={"FS_MODE": "hostfs"},
         )
         self.assertEqual(output, ["0.1.2", "Pebble OS 0.1.2"])
+
+    def test_import_net_module_wraps_host_network_functions(self) -> None:
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
+        output = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
+            host_functions={
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+                "net_lookup_host": lambda args, line: {
+                    "ok": 1,
+                    "host": args[0],
+                    "addresses": ["127.0.0.1", "::1"],
+                    "error": "",
+                },
+                "net_tcp_probe": lambda args, line: {
+                    "ok": 1,
+                    "host": args[0],
+                    "address": "127.0.0.1",
+                    "port": args[1],
+                    "latency_ms": 12,
+                    "error": "",
+                },
+                "net_http_get": lambda args, line: {
+                    "ok": 1,
+                    "status": 200,
+                    "body": "hello",
+                    "headers": ["Content-Type: text/plain"],
+                    "url": args[0],
+                    "error": "",
+                },
+            },
+        ).execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    "import system.lib.net",
+                    'print system.lib.net.resolve("localhost")[0]',
+                    'probe = system.lib.net.probe("localhost", 8080)',
+                    'print probe["port"]',
+                    'resp = system.lib.net.http_get("https://example.com")',
+                    'print resp["status"]',
+                    'print resp["body"]',
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["127.0.0.1", "8080", "200", "hello"])
+
+    def test_import_ai_module_wraps_host_chat_function(self) -> None:
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
+        output = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
+            host_functions={
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+                "ai_chat_complete": lambda args, line: {
+                    "ok": 1,
+                    "status": 200,
+                    "content": "pong",
+                    "url": args[0],
+                    "error": "",
+                    "insecure_tls": 0,
+                },
+            },
+        ).execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    "import system.lib.ai",
+                    'resp = system.lib.ai.chat_complete("https://api.example/v1", "key", "demo", "sys", "", "hello", 5000)',
+                    'print resp["status"]',
+                    'print resp["content"]',
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["200", "pong"])
 
     def test_version_and_uname_commands_report_current_release(self) -> None:
         runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
@@ -1232,6 +1352,133 @@ class PebbleInterpreterTests(unittest.TestCase):
             initial_globals={"TARGET_FILE": "note.txt", "FILE_CONTENT": "abc", "FS_MODE": "hostfs"},
         )
         self.assertTrue(rendered)
+
+    def test_system_clock_renders_noninteractive_frame(self) -> None:
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
+        clock_source = Path("pebble_system/bin/clock.peb").read_text(encoding="utf-8")
+        rendered: list[str] = []
+        host_calls: list[str] = []
+        next_fd = {"value": 3}
+        fd_table: dict[int, dict[str, object]] = {}
+
+        def fd_open(args, line):
+            fd = next_fd["value"]
+            next_fd["value"] = fd + 1
+            fd_table[fd] = {"path": args[0], "mode": args[1]}
+            return fd
+
+        def fd_write(args, line):
+            fd = args[0]
+            text = args[1]
+            record = fd_table.get(fd, {})
+            if record.get("path") in {"/dev/stdout", "/dev/tty"}:
+                rendered.append(text)
+            return len(text)
+
+        interpreter = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
+            host_functions={
+                "term_write": lambda args, line: rendered.append(args[0]) or args[0],
+                "term_flush": lambda args, line: host_calls.append("flush") or 0,
+                "term_clear": lambda args, line: host_calls.append("clear") or 0,
+                "term_move": lambda args, line: 0,
+                "term_hide_cursor": lambda args, line: host_calls.append("hide") or 0,
+                "term_show_cursor": lambda args, line: host_calls.append("show") or 0,
+                "term_read_key_timeout": lambda args, line: "",
+                "term_rows": lambda args, line: 24,
+                "term_cols": lambda args, line: 80,
+                "term_state": lambda args, line: {
+                    "owner_pgid": 0,
+                    "mode": "cooked",
+                    "interactive": 0,
+                    "foreground_raw": 0,
+                    "rows": 24,
+                    "cols": 80,
+                },
+                "fd_open": fd_open,
+                "fd_write": fd_write,
+                "fd_close": lambda args, line: 0,
+                "current_time": lambda args, line: "2026-03-07, 12:34:56",
+                "runtime_error": lambda args, line: (_ for _ in ()).throw(PebbleError(args[0])),
+            },
+        )
+
+        interpreter.execute(
+            runtime_source + "\n" + clock_source,
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+
+        joined = "".join(rendered)
+        self.assertIn("Pebble analog clock  q quit  2026-03-07, 12:34:56", joined)
+        self.assertIn("12", joined)
+        self.assertIn("3", joined)
+        self.assertIn("6", joined)
+        self.assertIn("9", joined)
+        self.assertIn("H", joined)
+        self.assertIn("M", joined)
+        self.assertIn(".", joined)
+        self.assertIn("*", joined)
+        self.assertEqual(host_calls[:2], ["hide", "clear"])
+        self.assertIn("flush", host_calls)
+        self.assertEqual(host_calls[-1], "show")
+
+    def test_system_clock_renders_noninteractive_frame_in_bytecode_mode(self) -> None:
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
+        clock_source = Path("pebble_system/bin/clock.peb").read_text(encoding="utf-8")
+        rendered: list[str] = []
+        next_fd = {"value": 3}
+        fd_table: dict[int, dict[str, object]] = {}
+
+        def fd_open(args, line):
+            fd = next_fd["value"]
+            next_fd["value"] = fd + 1
+            fd_table[fd] = {"path": args[0], "mode": args[1]}
+            return fd
+
+        def fd_write(args, line):
+            fd = args[0]
+            text = args[1]
+            record = fd_table.get(fd, {})
+            if record.get("path") in {"/dev/stdout", "/dev/tty"}:
+                rendered.append(text)
+            return len(text)
+
+        interpreter = PebbleBytecodeInterpreter(
+            path_resolver=resolve_repo_system_path,
+            host_functions={
+                "term_write": lambda args, line: rendered.append(args[0]) or args[0],
+                "term_flush": lambda args, line: 0,
+                "term_clear": lambda args, line: 0,
+                "term_move": lambda args, line: 0,
+                "term_hide_cursor": lambda args, line: 0,
+                "term_show_cursor": lambda args, line: 0,
+                "term_read_key_timeout": lambda args, line: "",
+                "term_rows": lambda args, line: 24,
+                "term_cols": lambda args, line: 80,
+                "term_state": lambda args, line: {
+                    "owner_pgid": 0,
+                    "mode": "cooked",
+                    "interactive": 0,
+                    "foreground_raw": 0,
+                    "rows": 24,
+                    "cols": 80,
+                },
+                "fd_open": fd_open,
+                "fd_write": fd_write,
+                "fd_close": lambda args, line: 0,
+                "current_time": lambda args, line: "2026-03-07, 03:00:47",
+            },
+        )
+
+        interpreter.prepare(runtime_source + "\n" + clock_source)
+        interpreter.run_until_complete()
+
+        joined = "".join(rendered)
+        self.assertIn("Pebble analog clock  q quit  2026-03-07, 03:00:47", joined)
+        self.assertIn("12", joined)
+        self.assertIn("H", joined)
+        self.assertIn("M", joined)
+        self.assertIn(".", joined)
 
     def test_runtime_exposes_timed_key_reads(self) -> None:
         runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
@@ -2163,6 +2410,23 @@ class PebbleShellRuntimeTests(unittest.TestCase):
             shell.onecmd("echo hello pebble os")
         self.assertIn("hello pebble os", outputs)
 
+    def test_clear_emits_terminal_reset_sequence(self) -> None:
+        shell = build_shell()
+        stream = io.StringIO()
+        with patch("sys.stdout", stream):
+            shell.onecmd("clear")
+        self.assertIn("\x1b[2J\x1b[H", stream.getvalue())
+
+    def test_history_lists_recent_commands(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("pwd")
+            shell.onecmd("echo hello")
+            shell.onecmd("history 2")
+        self.assertTrue(any(line.endswith("echo hello") for line in outputs))
+        self.assertTrue(any(line.endswith("history 2") for line in outputs))
+
     def test_help_for_external_command_uses_system_bin(self) -> None:
         shell = build_shell()
         outputs: list[str] = []
@@ -2220,6 +2484,62 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         self.assertIn("*", outputs[0])
         self.assertIn("min:", outputs[0])
         self.assertIn("max:", outputs[0])
+
+    def test_balls_command_completes_in_noninteractive_shell(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("balls")
+        self.assertIn("100 bouncing balls finished.", outputs)
+
+    def test_starfield_command_completes_in_noninteractive_shell(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("starfield")
+        self.assertIn("Starfield finished.", outputs)
+
+    def test_tunnel_command_completes_in_noninteractive_shell(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("tunnel")
+        self.assertIn("Tunnel finished.", outputs)
+
+    def test_snake_command_completes_in_noninteractive_shell(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("snake")
+        self.assertIn("Neon snake finished.", outputs)
+
+    def test_rainfire_command_completes_in_noninteractive_shell(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("rainfire")
+        self.assertIn("Rainfire finished.", outputs)
+
+    def test_matrix_command_completes_in_noninteractive_shell(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("matrix")
+        self.assertIn("Matrix finished.", outputs)
+
+    def test_train_command_completes_in_noninteractive_shell(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("train")
+        self.assertIn("Train passed.", outputs)
+
+    def test_welcome_command_completes_in_noninteractive_shell(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("welcome")
+        self.assertIn("Welcome tour finished.", outputs)
 
     def test_wc_counts_file_contents(self) -> None:
         shell = build_shell()
@@ -2708,6 +3028,26 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         self.assertTrue(shell.fs.resolve_path("etc/fstab").exists())
         self.assertIn("PROFILE_FLAG=loaded", outputs)
 
+    def test_shell_boot_loads_profile_local_when_present(self) -> None:
+        shell = build_shell()
+        profile_local = shell.fs.resolve_path("etc/profile.local")
+        original_exists = profile_local.exists()
+        original = ""
+        if original_exists:
+            original = profile_local.read_text(encoding="utf-8")
+        profile_local.write_text("export PROFILE_LOCAL_FLAG=loaded-local\n", encoding="utf-8")
+        try:
+            shell = build_shell()
+            outputs: list[str] = []
+            with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+                shell.onecmd("env")
+            self.assertIn("PROFILE_LOCAL_FLAG=loaded-local", outputs)
+        finally:
+            if original_exists:
+                profile_local.write_text(original, encoding="utf-8")
+            elif profile_local.exists():
+                profile_local.unlink()
+
     def test_shell_supports_multi_stage_pipeline(self) -> None:
         shell = build_shell()
         program_a = shell.fs.resolve_path("pipe_first.peb")
@@ -3091,6 +3431,332 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         self.assertTrue(any("o" in line for line in final_window))
         self.assertTrue(any("~~~~~~~~~~~~~~~~~" in line for line in final_window))
         self.assertTrue(any("########################################" in line for line in final_window))
+
+    def test_ping_command_reports_tcp_probe_result(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+
+        class FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def getpeername(self):
+                return ("127.0.0.1", 80)
+
+        with patch("pebble_bootloader.shell.socket.getaddrinfo", return_value=[(0, 0, 0, "", ("127.0.0.1", 0))]):
+            with patch("pebble_bootloader.shell.socket.create_connection", return_value=FakeConn()):
+                with patch(
+                    "builtins.print",
+                    side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                ):
+                    shell.onecmd("ping localhost 80")
+
+        self.assertTrue(any(line.startswith("tcp pong localhost:80") for line in outputs))
+
+    def test_fetch_command_writes_http_body_to_file(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        target = shell.fs.resolve_path("fetch_output.txt")
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def read(self):
+                return b"hello network"
+
+            def geturl(self):
+                return "https://example.com/"
+
+            @property
+            def headers(self):
+                return {"Content-Type": "text/plain"}
+
+        try:
+            with patch("pebble_bootloader.shell.urllib.request.urlopen", return_value=FakeResponse()):
+                with patch(
+                    "builtins.print",
+                    side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                ):
+                    shell.onecmd("fetch https://example.com fetch_output.txt")
+            self.assertEqual(target.read_text(encoding="utf-8"), "hello network")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertTrue(any(line.startswith("saved ") for line in outputs))
+
+    def test_curl_command_prints_http_body(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def read(self):
+                return b"curl body"
+
+            def geturl(self):
+                return "https://example.com/"
+
+            @property
+            def headers(self):
+                return {"Content-Type": "text/plain"}
+
+        with patch("pebble_bootloader.shell.urllib.request.urlopen", return_value=FakeResponse()):
+            with patch(
+                "builtins.print",
+                side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+            ):
+                shell.onecmd("curl https://example.com")
+
+        self.assertIn("curl body", outputs)
+
+    def test_curl_command_supports_dash_o(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        target = shell.fs.resolve_path("curl_output.txt")
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def read(self):
+                return b"curl save"
+
+            def geturl(self):
+                return "https://example.com/"
+
+            @property
+            def headers(self):
+                return {"Content-Type": "text/plain"}
+
+        try:
+            with patch("pebble_bootloader.shell.urllib.request.urlopen", return_value=FakeResponse()):
+                with patch(
+                    "builtins.print",
+                    side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                ):
+                    shell.onecmd("curl -o curl_output.txt https://example.com")
+            self.assertEqual(target.read_text(encoding="utf-8"), "curl save")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertTrue(any(line.startswith("saved ") for line in outputs))
+
+    def test_wget_command_uses_url_basename_by_default(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        target = shell.fs.resolve_path("data.txt")
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def read(self):
+                return b"wget body"
+
+            def geturl(self):
+                return "https://example.com/data.txt"
+
+            @property
+            def headers(self):
+                return {"Content-Type": "text/plain"}
+
+        try:
+            with patch("pebble_bootloader.shell.urllib.request.urlopen", return_value=FakeResponse()):
+                with patch(
+                    "builtins.print",
+                    side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                ):
+                    shell.onecmd("wget https://example.com/data.txt")
+            self.assertEqual(target.read_text(encoding="utf-8"), "wget body")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertTrue(any(line.startswith("saved ") for line in outputs))
+
+    def test_wget_command_supports_explicit_output_file(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        target = shell.fs.resolve_path("wget_output.txt")
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def read(self):
+                return b"wget save"
+
+            def geturl(self):
+                return "https://example.com/path"
+
+            @property
+            def headers(self):
+                return {"Content-Type": "text/plain"}
+
+        try:
+            with patch("pebble_bootloader.shell.urllib.request.urlopen", return_value=FakeResponse()):
+                with patch(
+                    "builtins.print",
+                    side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                ):
+                    shell.onecmd("wget https://example.com/path wget_output.txt")
+            self.assertEqual(target.read_text(encoding="utf-8"), "wget save")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertTrue(any(line.startswith("saved ") for line in outputs))
+
+    def test_chat_command_uses_environment_configuration(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"hello from model"}}]}'
+
+            def geturl(self):
+                return "https://api.example/v1/chat/completions"
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        with patch("pebble_bootloader.shell.urllib.request.urlopen", return_value=FakeResponse()):
+            with patch(
+                "builtins.print",
+                side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+            ):
+                shell.onecmd(
+                    "OPENAI_BASE_URL=https://api.example/v1 "
+                    "OPENAI_API_KEY=test-key "
+                    "OPENAI_MODEL=test-model "
+                    'chat "hello there"'
+                )
+
+        self.assertIn("waiting for model...", outputs)
+        self.assertIn("hello from model", outputs)
+
+    def test_chat_command_reports_missing_environment(self) -> None:
+        shell = build_shell()
+        shell.env = {"PATH": shell.env.get("PATH", "/system/bin:/system/sbin:/bin")}
+        outputs: list[str] = []
+
+        with patch(
+            "builtins.print",
+            side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+        ):
+            shell.onecmd('chat "hello"')
+
+        self.assertTrue(any("OPENAI_BASE_URL is not set" in line for line in outputs))
+
+    def test_chat_repl_keeps_prior_turns_in_request_history(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        prompts = iter(["hello", "what did I just say?", "quit"])
+        seen_payloads: list[dict[str, object]] = []
+
+        class FakeResponse:
+            def __init__(self, content: str) -> None:
+                self.status = 200
+                self._content = content
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def read(self):
+                body = {"choices": [{"message": {"content": self._content}}]}
+                return json.dumps(body).encode("utf-8")
+
+            def geturl(self):
+                return "https://api.example/v1/chat/completions"
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout=0, context=None):
+            payload = json.loads(request.data.decode("utf-8"))
+            seen_payloads.append(payload)
+            if len(seen_payloads) == 1:
+                return FakeResponse("first reply")
+            return FakeResponse("second reply")
+
+        def fake_input(prompt: str = "") -> str:
+            return next(prompts)
+
+        state_file = shell.fs.resolve_path(".__chat_session__.txt")
+        try:
+            with patch("pebble_bootloader.shell.urllib.request.urlopen", side_effect=fake_urlopen):
+                with patch("builtins.input", side_effect=fake_input):
+                    with patch(
+                        "builtins.print",
+                        side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+                    ):
+                        shell.onecmd(
+                            "OPENAI_BASE_URL=https://api.example/v1 "
+                            "OPENAI_API_KEY=test-key "
+                            "OPENAI_MODEL=test-model "
+                            "chat"
+                        )
+        finally:
+            if state_file.exists():
+                state_file.unlink()
+
+        self.assertEqual(len(seen_payloads), 2)
+        first_messages = seen_payloads[0]["messages"]
+        second_messages = seen_payloads[1]["messages"]
+        self.assertEqual(first_messages[-1]["content"], "hello")
+        self.assertEqual(second_messages[-3]["content"], "hello")
+        self.assertEqual(second_messages[-2]["content"], "first reply")
+        self.assertEqual(second_messages[-1]["content"], "what did I just say?")
+        self.assertIn("waiting for model...", outputs)
+        self.assertIn("first reply", outputs)
+        self.assertIn("second reply", outputs)
 
     def test_runtime_boot_identifies_memory_filesystem(self) -> None:
         shell = build_shell(fs_mode="mfs")

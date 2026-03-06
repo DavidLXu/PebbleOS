@@ -1,0 +1,141 @@
+import random
+
+GLYPHS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ#$%&*+=<>"
+
+def make_row(width, fill):
+    out = ""
+    i = 0
+    while i < width:
+        out = out + fill
+        i = i + 1
+    return out
+
+def glyph_at(index):
+    return GLYPHS[int_mod(index, len(GLYPHS))]
+
+def column_new(height):
+    col = {}
+    col["head"] = 2 + random.range(0, height)
+    col["speed"] = 1 + random.range(0, 2)
+    col["length"] = 8 + random.range(0, 14)
+    col["phase"] = random.range(0, 2000)
+    return col
+
+def build_columns(width, height):
+    cols = []
+    i = 0
+    while i < width:
+        append(cols, column_new(height))
+        i = i + 1
+    return cols
+
+def glyph_for_cell(frame, x, y):
+    return glyph_at(frame * 3 + x * 7 + y * 11)
+
+def colorize(ch, distance):
+    if distance == 0:
+        return "\u001b[01;37m" + ch + "\u001b[00m"
+    if distance <= 1:
+        return "\u001b[01;32m" + ch + "\u001b[00m"
+    if distance <= 4:
+        return "\u001b[01;32m" + ch + "\u001b[00m"
+    if distance <= 8:
+        return "\u001b[00;32m" + ch + "\u001b[00m"
+    return "\u001b[00;32m" + ch + "\u001b[00m"
+
+def draw_matrix(width, height, columns, frame):
+    clear_screen()
+    move_cursor(1, 1)
+    draw_text("MATRIX DIGITAL RAIN  Press Q to quit  frame " + str(frame))
+
+    y = 2
+    while y <= height:
+        line = ""
+        x = 0
+        while x < width:
+            col = columns[x]
+            distance = col["head"] - y
+            if distance >= 0 and distance < col["length"]:
+                ch = glyph_for_cell(frame + col["phase"], x, y)
+                line = line + colorize(ch, distance)
+            else:
+                line = line + " "
+            x = x + 1
+        move_cursor(y, 1)
+        draw_text(line)
+        y = y + 1
+
+    flush_screen()
+    return 0
+
+def step_columns(columns, height):
+    i = 0
+    while i < len(columns):
+        col = columns[i]
+        col["head"] = col["head"] + col["speed"]
+        if col["head"] - col["length"] > height:
+            columns[i] = column_new(height)
+        else:
+            columns[i] = col
+        i = i + 1
+    return 0
+
+random.seed(23)
+
+tty = tty_state()
+interactive = tty["interactive"]
+columns = []
+frame = 0
+running = 1
+max_frames = 140
+if interactive == 0:
+    max_frames = 18
+
+hide_cursor()
+
+while running:
+    tty = tty_state()
+    width = tty["cols"]
+    height = tty["rows"]
+    if interactive == 0:
+        if width > 40:
+            width = 40
+        if height > 14:
+            height = 14
+
+    if width < 20 or height < 8:
+        clear_screen()
+        move_cursor(1, 1)
+        draw_text("terminal too small for matrix")
+        flush_screen()
+        if interactive:
+            key = read_key_timeout(80)
+            if key == "q" or key == "Q" or key == "ESC":
+                running = 0
+            elif frame >= max_frames:
+                running = 0
+        else:
+            running = 0
+    else:
+        if len(columns) != width:
+            columns = build_columns(width, height)
+        draw_matrix(width, height, columns, frame)
+
+        if interactive:
+            key = read_key_timeout(65)
+            if key == "q" or key == "Q" or key == "ESC":
+                running = 0
+            elif frame >= max_frames:
+                running = 0
+        else:
+            if frame >= max_frames:
+                running = 0
+
+        if running:
+            step_columns(columns, height)
+            frame = frame + 1
+
+clear_screen()
+move_cursor(1, 1)
+show_cursor()
+print "Matrix finished."

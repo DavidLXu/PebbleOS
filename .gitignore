@@ -1,3 +1,6 @@
+pebble_disk/etc/profile.local
+pebble_disk/.__chat_session__.txt
+pebble_disk/.__physics_state__.txt
+pebble_disk/out_example.html
 __pycache__/
 *.pyc
-

@@ -1,0 +1,4 @@
+if ARGC != 0:
+    print "this command does not take arguments"
+else:
+    clear_screen()

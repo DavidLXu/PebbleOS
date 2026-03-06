@@ -1,0 +1,169 @@
+import random
+
+def make_row(width, fill):
+    out = ""
+    i = 0
+    while i < width:
+        out = out + fill
+        i = i + 1
+    return out
+
+def fire_color(level):
+    if level >= 4:
+        return "\u001b[01;33m#\u001b[00m"
+    if level == 3:
+        return "\u001b[01;31m*\u001b[00m"
+    if level == 2:
+        return "\u001b[00;31m+\u001b[00m"
+    if level == 1:
+        return "\u001b[00;90m.\u001b[00m"
+    return " "
+
+def draw_scene(width, height, drops, fire, frame):
+    clear_screen()
+    move_cursor(1, 1)
+    draw_text("RAINFIRE  neon rain + fire  q quit  frame " + str(frame))
+
+    row = 2
+    while row <= height:
+        move_cursor(row, 1)
+        draw_text(make_row(width, " "))
+        row = row + 1
+
+    i = 0
+    while i < len(drops):
+        move_cursor(drops[i]["y"], drops[i]["x"])
+        draw_text("\u001b[01;34m|\u001b[00m")
+        i = i + 1
+
+    row = 0
+    while row < len(fire):
+        col = 0
+        move_cursor(height - row, 1)
+        while col < width:
+            draw_text(fire_color(fire[row][col]))
+            col = col + 1
+        row = row + 1
+    flush_screen()
+    return 0
+
+def step_drops(drops, width, height):
+    i = 0
+    while i < len(drops):
+        drop = drops[i]
+        drop["y"] = drop["y"] + drop["speed"]
+        if drop["y"] > height:
+            drop["x"] = 1 + random.range(0, width)
+            drop["y"] = 2 + random.range(0, 4)
+            drop["speed"] = 1 + random.range(0, 2)
+        drops[i] = drop
+        i = i + 1
+    return 0
+
+def seed_fire(width):
+    row = []
+    i = 0
+    while i < width:
+        append(row, random.range(1, 5))
+        i = i + 1
+    return row
+
+def build_fire(width, rows):
+    fire = []
+    r = 0
+    while r < rows:
+        row = []
+        c = 0
+        while c < width:
+            append(row, 0)
+            c = c + 1
+        append(fire, row)
+        r = r + 1
+    return fire
+
+def step_fire(fire, width):
+    fire[0] = seed_fire(width)
+    row = 1
+    while row < len(fire):
+        col = 0
+        while col < width:
+            left = col - 1
+            if left < 0:
+                left = 0
+            right = col + 1
+            if right >= width:
+                right = width - 1
+            value = fire[row - 1][left] + fire[row - 1][col] + fire[row - 1][right]
+            next_value = int(value / 3)
+            if next_value > 0 and int_mod(row + col, 3) == 0:
+                next_value = next_value - 1
+            fire[row][col] = next_value
+            col = col + 1
+        row = row + 1
+    return 0
+
+random.seed(17)
+
+tty = tty_state()
+interactive = tty["interactive"]
+drops = []
+fire = []
+frame = 0
+running = 1
+max_frames = 8
+interactive_max_frames = 180
+hide_cursor()
+
+while running:
+    tty = tty_state()
+    width = tty["cols"]
+    height = tty["rows"]
+    if interactive == 0:
+        if width > 40:
+            width = 40
+        if height > 14:
+            height = 14
+    if width < 20 or height < 10:
+        clear_screen()
+        move_cursor(1, 1)
+        draw_text("terminal too small for rainfire")
+        flush_screen()
+        if interactive:
+            key = read_key_timeout(80)
+            if key == "q" or key == "Q" or key == "ESC":
+                running = 0
+        else:
+            running = 0
+    else:
+        if len(drops) == 0:
+            i = 0
+            while i < 24:
+                append(drops, {"x": 1 + random.range(0, width - 1), "y": 2 + random.range(0, height - 3), "speed": 1 + random.range(0, 2)})
+                i = i + 1
+        rebuild_fire = 0
+        if len(fire) == 0:
+            rebuild_fire = 1
+        else:
+            if len(fire[0]) != width:
+                rebuild_fire = 1
+        if rebuild_fire:
+            fire = build_fire(width, 6)
+        draw_scene(width, height, drops, fire, frame)
+        if interactive:
+            key = read_key_timeout(40)
+            if key == "q" or key == "Q" or key == "ESC":
+                running = 0
+            elif frame >= interactive_max_frames:
+                running = 0
+        else:
+            if frame >= max_frames:
+                running = 0
+        if running:
+            step_drops(drops, width, height)
+            step_fire(fire, width)
+            frame = frame + 1
+
+clear_screen()
+move_cursor(1, 1)
+show_cursor()
+print "Rainfire finished."

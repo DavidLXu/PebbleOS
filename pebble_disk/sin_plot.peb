@@ -1,0 +1,13 @@
+import math
+import matplotlib
+
+print "Smooth sine plot (Pebble)"
+
+values = []
+x = 0
+while x < 360:
+    y = math.sin(x) / 10000
+    append(values, y)
+    x = x + 2
+
+print matplotlib.render(values, 20)

@@ -1,0 +1,21 @@
+DEFAULT_TCP_TIMEOUT_MS = 2000
+DEFAULT_HTTP_TIMEOUT_MS = 5000
+
+def lookup(host):
+    return net_lookup_host(host)
+
+def resolve(host):
+    result = lookup(host)
+    return result["addresses"]
+
+def tcp_probe(host, port, timeout_ms):
+    return net_tcp_probe(host, port, timeout_ms)
+
+def probe(host, port):
+    return net_tcp_probe(host, port, DEFAULT_TCP_TIMEOUT_MS)
+
+def http_get(url):
+    return net_http_get(url, DEFAULT_HTTP_TIMEOUT_MS)
+
+def http_get_timeout(url, timeout_ms):
+    return net_http_get(url, timeout_ms)

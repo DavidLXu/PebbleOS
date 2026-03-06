@@ -1,0 +1,202 @@
+def make_row(width, fill):
+    out = ""
+    i = 0
+    while i < width:
+        out = out + fill
+        i = i + 1
+    return out
+
+def pad_line(text, width):
+    if len(text) >= width:
+        out = ""
+        i = 0
+        while i < width:
+            out = out + text[i]
+            i = i + 1
+        return out
+    return text + make_row(width - len(text), " ")
+
+def draw_frame(title, lines, width, height, page, total_pages):
+    clear_screen()
+    move_cursor(1, 1)
+    draw_text(pad_line("WELCOME TO PEBBLE OS", width))
+    move_cursor(2, 1)
+    draw_text(pad_line(title, width))
+    move_cursor(3, 1)
+    draw_text(make_row(width, "-"))
+
+    row = 0
+    while row < height - 5:
+        move_cursor(row + 4, 1)
+        if row < len(lines):
+            draw_text(pad_line(lines[row], width))
+        else:
+            draw_text(make_row(width, " "))
+        row = row + 1
+
+    move_cursor(height - 1, 1)
+    draw_text(make_row(width, "-"))
+    move_cursor(height, 1)
+    footer = "N next  B back  Q quit   page " + str(page + 1) + "/" + str(total_pages)
+    draw_text(pad_line(footer, width))
+    flush_screen()
+    return 0
+
+def page_title(page):
+    if page == 0:
+        return "Hello"
+    if page == 1:
+        return "Move Around"
+    if page == 2:
+        return "Work With Files"
+    if page == 3:
+        return "Watch And Play"
+    if page == 4:
+        return "System And Network"
+    return "Next Steps"
+
+def page_lines(page):
+    lines = []
+    if page == 0:
+        append(lines, "Hello.")
+        append(lines, "")
+        append(lines, "You are now inside Pebble OS.")
+        append(lines, "This system mixes shell tools, Pebble programs, live terminal scenes,")
+        append(lines, "and small operating-system style features into one environment.")
+        append(lines, "")
+        append(lines, "You already have a filesystem, commands, an editor, networking,")
+        append(lines, "process views, and interactive demos.")
+        append(lines, "")
+        append(lines, "This welcome tour will walk you through the basics gradually.")
+        append(lines, "Press N to move forward when you are ready.")
+        return lines
+    if page == 1:
+        append(lines, "Start with navigation.")
+        append(lines, "")
+        append(lines, "Useful commands:")
+        append(lines, "  pwd           show current directory")
+        append(lines, "  ls            list files and directories")
+        append(lines, "  cd system     move into the mounted system tree")
+        append(lines, "  history       show recent commands")
+        append(lines, "")
+        append(lines, "Try this after the tour:")
+        append(lines, "  pwd")
+        append(lines, "  ls")
+        append(lines, "  cd system")
+        append(lines, "  ls")
+        return lines
+    if page == 2:
+        append(lines, "Pebble OS lets you create, inspect, edit, and remove files.")
+        append(lines, "")
+        append(lines, "Useful commands:")
+        append(lines, "  touch demo.peb")
+        append(lines, "  cat demo.peb")
+        append(lines, "  nano demo.peb")
+        append(lines, "  rm demo.peb")
+        append(lines, "")
+        append(lines, "For quick learning:")
+        append(lines, "  nano note.txt")
+        append(lines, "Then type some text, exit nano, and read it back with cat.")
+        return lines
+    if page == 3:
+        append(lines, "Pebble OS also behaves like a toy terminal playground.")
+        append(lines, "")
+        append(lines, "Interactive demos and games:")
+        append(lines, "  balls         gravity and wall-bounce simulation")
+        append(lines, "  starfield     depth-based motion scene")
+        append(lines, "  matrix        falling digital rain")
+        append(lines, "  tunnel        pseudo-3D racer")
+        append(lines, "  snake         neon snake")
+        append(lines, "  rainfire      rain and fire particle scene")
+        append(lines, "  train         side-view train pass")
+        append(lines, "")
+        append(lines, "Most of them quit with Q or Esc.")
+        return lines
+    if page == 4:
+        append(lines, "Pebble OS has system-style tools too.")
+        append(lines, "")
+        append(lines, "Process and task tools:")
+        append(lines, "  ps            list processes")
+        append(lines, "  ps -T         list threads")
+        append(lines, "  top           live process view")
+        append(lines, "  htop --once   snapshot process view")
+        append(lines, "")
+        append(lines, "Networking tools:")
+        append(lines, "  ping HOST PORT")
+        append(lines, "  fetch URL")
+        append(lines, "  curl URL")
+        append(lines, "  wget URL")
+        return lines
+    append(lines, "Where to go next:")
+    append(lines, "")
+    append(lines, "1. Explore /system with ls and cd.")
+    append(lines, "2. Edit a file with nano.")
+    append(lines, "3. Run a live terminal scene such as matrix or tunnel.")
+    append(lines, "4. Inspect processes with ps and htop --once.")
+    append(lines, "5. Try networking with fetch or curl.")
+    append(lines, "")
+    append(lines, "If you forget commands, use:")
+    append(lines, "  help")
+    append(lines, "  help COMMAND")
+    append(lines, "")
+    append(lines, "Press Q to leave the tour.")
+    return lines
+
+tty = tty_state()
+interactive = tty["interactive"]
+page = 0
+total_pages = 6
+running = 1
+idle = 0
+auto_ticks = 0
+
+hide_cursor()
+
+while running:
+    tty = tty_state()
+    width = tty["cols"]
+    height = tty["rows"]
+    if interactive == 0:
+        if width > 68:
+            width = 68
+        if height > 18:
+            height = 18
+
+    if width < 30 or height < 12:
+        clear_screen()
+        move_cursor(1, 1)
+        draw_text("terminal too small for welcome")
+        flush_screen()
+        if interactive:
+            key = read_key_timeout(100)
+            if key == "q" or key == "Q" or key == "ESC":
+                running = 0
+        else:
+            running = 0
+    else:
+        draw_frame(page_title(page), page_lines(page), width, height, page, total_pages)
+        if interactive:
+            key = read_key_timeout(120)
+            if key == "q" or key == "Q" or key == "ESC":
+                running = 0
+            elif key == "n" or key == "N" or key == "RIGHT" or key == "ENTER" or key == "SPACE":
+                if page < total_pages - 1:
+                    page = page + 1
+                else:
+                    running = 0
+            elif key == "b" or key == "B" or key == "LEFT":
+                if page > 0:
+                    page = page - 1
+        else:
+            auto_ticks = auto_ticks + 1
+            if auto_ticks >= 2:
+                auto_ticks = 0
+                if page < total_pages - 1:
+                    page = page + 1
+                else:
+                    running = 0
+
+clear_screen()
+move_cursor(1, 1)
+show_cursor()
+print "Welcome tour finished."

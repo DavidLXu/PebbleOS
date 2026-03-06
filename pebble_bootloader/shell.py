@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import cmd
+import json
 import os
 import queue
 import select
 import shutil
 import shlex
+import socket
+import ssl
 import time
 import sys
 import termios
 import threading
 import tty
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -115,6 +120,7 @@ class PebbleShell(cmd.Cmd):
             "PATH": "/system/bin:/system/sbin:/bin",
             "PEBBLE_COLOR": "1" if self._color_enabled else "0",
         }
+        self._command_history: list[str] = []
         self._runtime_env_override: dict[str, str] | None = None
         self.mfs_blob: str | None = None
         self._jobs: dict[int, BackgroundJob] = {}
@@ -213,6 +219,7 @@ class PebbleShell(cmd.Cmd):
     def completenames(self, text: str, *ignored) -> list[str]:
         commands = [
             "help",
+            "history",
             "ls",
             "cd",
             "export",
@@ -296,6 +303,9 @@ class PebbleShell(cmd.Cmd):
         return None
 
     def onecmd(self, line: str) -> bool | None:
+        stripped_line = line.strip()
+        if stripped_line:
+            self._command_history.append(stripped_line)
         pipeline = self._parse_pipeline(line)
         if pipeline is not None:
             previous_stdin_fd = self._active_stdin_fd
@@ -639,6 +649,10 @@ class PebbleShell(cmd.Cmd):
                 "pebble_repl_start": self._host_pebble_repl_start,
                 "pebble_repl_step": self._host_pebble_repl_step,
                 "pebble_repl_stop": self._host_pebble_repl_stop,
+                "net_lookup_host": self._host_net_lookup_host,
+                "net_tcp_probe": self._host_net_tcp_probe,
+                "net_http_get": self._host_net_http_get,
+                "ai_chat_complete": self._host_ai_chat_complete,
                 "start_background_job": self._host_start_background_job,
                 "list_background_jobs": self._host_list_background_jobs,
                 "list_processes": self._host_list_processes,
@@ -698,6 +712,7 @@ class PebbleShell(cmd.Cmd):
                 "term_mode": self._host_term_mode,
                 "term_state": self._host_term_state,
                 "current_time": self._host_current_time,
+                "shell_history": self._host_shell_history,
                 "sleep": self._host_sleep,
                 "runtime_error": self._host_runtime_error,
             },
@@ -1187,6 +1202,203 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: pebble_repl_stop() expected 0 arguments but got {len(args)}")
         self._pebble_repl = None
         return 0
+
+    def _host_net_lookup_host(self, args: list[object], line_number: int) -> dict[str, object]:
+        host = self._require_string_arg("net_lookup_host", args, line_number, 1)
+        try:
+            infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        except OSError as exc:
+            return {"ok": 0, "host": host, "addresses": [], "error": str(exc)}
+        addresses: list[str] = []
+        seen: set[str] = set()
+        for info in infos:
+            sockaddr = info[4]
+            if not isinstance(sockaddr, tuple) or not sockaddr:
+                continue
+            address = str(sockaddr[0])
+            if address in seen:
+                continue
+            seen.add(address)
+            addresses.append(address)
+        return {"ok": 1, "host": host, "addresses": addresses, "error": ""}
+
+    def _host_net_tcp_probe(self, args: list[object], line_number: int) -> dict[str, object]:
+        if len(args) != 3:
+            raise PebbleError(f"line {line_number}: net_tcp_probe() expected 3 arguments but got {len(args)}")
+        host = args[0]
+        port = args[1]
+        timeout_ms = args[2]
+        if not isinstance(host, str) or not isinstance(port, int) or not isinstance(timeout_ms, int):
+            raise PebbleError(f"line {line_number}: net_tcp_probe() expects (string, int, int)")
+        if port < 1 or port > 65535:
+            raise PebbleError(f"line {line_number}: net_tcp_probe() port must be between 1 and 65535")
+        if timeout_ms < 1:
+            raise PebbleError(f"line {line_number}: net_tcp_probe() timeout must be positive")
+        started = time_module.monotonic()
+        try:
+            with socket.create_connection((host, port), timeout_ms / 1000.0) as conn:
+                peer = conn.getpeername()
+                address = ""
+                if isinstance(peer, tuple) and peer:
+                    address = str(peer[0])
+        except OSError as exc:
+            elapsed = int((time_module.monotonic() - started) * 1000)
+            return {
+                "ok": 0,
+                "host": host,
+                "address": "",
+                "port": port,
+                "latency_ms": elapsed,
+                "error": str(exc),
+            }
+        elapsed = int((time_module.monotonic() - started) * 1000)
+        return {"ok": 1, "host": host, "address": address, "port": port, "latency_ms": elapsed, "error": ""}
+
+    def _host_net_http_get(self, args: list[object], line_number: int) -> dict[str, object]:
+        if len(args) != 2:
+            raise PebbleError(f"line {line_number}: net_http_get() expected 2 arguments but got {len(args)}")
+        url = args[0]
+        timeout_ms = args[1]
+        if not isinstance(url, str) or not isinstance(timeout_ms, int):
+            raise PebbleError(f"line {line_number}: net_http_get() expects (string, int)")
+        if timeout_ms < 1:
+            raise PebbleError(f"line {line_number}: net_http_get() timeout must be positive")
+        request = urllib.request.Request(url, headers={"User-Agent": "PebbleOS/0.1.2"})
+        insecure_tls = 0
+        try:
+            try:
+                response_context = urllib.request.urlopen(request, timeout=timeout_ms / 1000.0)
+            except urllib.error.URLError as exc:
+                reason = getattr(exc, "reason", None)
+                if not isinstance(reason, ssl.SSLCertVerificationError) and "CERTIFICATE_VERIFY_FAILED" not in str(exc):
+                    raise
+                insecure_tls = 1
+                response_context = urllib.request.urlopen(
+                    request,
+                    timeout=timeout_ms / 1000.0,
+                    context=ssl._create_unverified_context(),
+                )
+            with response_context as response:
+                body = response.read().decode("utf-8", errors="replace")
+                headers = [f"{name}: {value}" for name, value in response.headers.items()]
+                status = int(getattr(response, "status", 200))
+                final_url = str(response.geturl())
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError) as exc:
+            return {"ok": 0, "status": 0, "body": "", "headers": [], "url": url, "error": str(exc), "insecure_tls": 0}
+        return {
+            "ok": 1,
+            "status": status,
+            "body": body,
+            "headers": headers,
+            "url": final_url,
+            "error": "",
+            "insecure_tls": insecure_tls,
+        }
+
+    def _host_ai_chat_complete(self, args: list[object], line_number: int) -> dict[str, object]:
+        if len(args) != 7:
+            raise PebbleError(f"line {line_number}: ai_chat_complete() expected 7 arguments but got {len(args)}")
+        if not all(isinstance(item, str) for item in args):
+            raise PebbleError(f"line {line_number}: ai_chat_complete() expects string arguments")
+        base_url, api_key, model, system_prompt, history_text, prompt, timeout_text = args
+        try:
+            timeout_seconds = max(1.0, int(timeout_text) / 1000.0)
+        except ValueError as exc:
+            raise PebbleError(f"line {line_number}: ai_chat_complete() timeout must be an integer string") from exc
+        endpoint = base_url.rstrip("/")
+        if endpoint.endswith("/chat/completions"):
+            chat_url = endpoint
+        elif endpoint.endswith("/v1"):
+            chat_url = endpoint + "/chat/completions"
+        else:
+            chat_url = endpoint + "/v1/chat/completions"
+        messages: list[dict[str, str]] = []
+        if system_prompt.strip():
+            messages.append({"role": "system", "content": system_prompt})
+        if history_text.strip():
+            for line in history_text.splitlines():
+                if "|" not in line:
+                    continue
+                role, content = line.split("|", 1)
+                if role not in {"user", "assistant"}:
+                    continue
+                decoded = bytes(content, "utf-8").decode("unicode_escape")
+                messages.append({"role": role, "content": decoded})
+        messages.append({"role": "user", "content": prompt})
+        payload = json.dumps({"model": model, "messages": messages}).encode("utf-8")
+        request = urllib.request.Request(
+            chat_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": "PebbleOS/0.1.2",
+            },
+            method="POST",
+        )
+        insecure_tls = 0
+        try:
+            try:
+                response_context = urllib.request.urlopen(request, timeout=timeout_seconds)
+            except urllib.error.URLError as exc:
+                reason = getattr(exc, "reason", None)
+                if not isinstance(reason, ssl.SSLCertVerificationError) and "CERTIFICATE_VERIFY_FAILED" not in str(exc):
+                    raise
+                insecure_tls = 1
+                response_context = urllib.request.urlopen(
+                    request,
+                    timeout=timeout_seconds,
+                    context=ssl._create_unverified_context(),
+                )
+            with response_context as response:
+                body = response.read().decode("utf-8", errors="replace")
+                status = int(getattr(response, "status", 200))
+                final_url = str(response.geturl())
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError) as exc:
+            return {
+                "ok": 0,
+                "status": 0,
+                "content": "",
+                "url": chat_url,
+                "error": str(exc),
+                "insecure_tls": 0,
+            }
+        try:
+            decoded = json.loads(body)
+        except json.JSONDecodeError as exc:
+            return {
+                "ok": 0,
+                "status": status,
+                "content": "",
+                "url": final_url,
+                "error": f"invalid JSON response: {exc}",
+                "insecure_tls": insecure_tls,
+            }
+        content = ""
+        if isinstance(decoded, dict):
+            choices = decoded.get("choices")
+            if isinstance(choices, list) and choices:
+                first = choices[0]
+                if isinstance(first, dict):
+                    message = first.get("message")
+                    if isinstance(message, dict):
+                        raw_content = message.get("content", "")
+                        if isinstance(raw_content, str):
+                            content = raw_content
+                        elif isinstance(raw_content, list):
+                            pieces: list[str] = []
+                            for item in raw_content:
+                                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                                    pieces.append(item["text"])
+                            content = "".join(pieces)
+        return {
+            "ok": 1,
+            "status": status,
+            "content": content,
+            "url": final_url,
+            "error": "",
+            "insecure_tls": insecure_tls,
+        }
 
     def _host_start_background_job(self, args: list[object], line_number: int) -> int:
         if len(args) != 3:
@@ -2174,6 +2386,11 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: current_time() expected 0 arguments but got {len(args)}")
         return datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
 
+    def _host_shell_history(self, args: list[object], line_number: int) -> list[str]:
+        if args:
+            raise PebbleError(f"line {line_number}: shell_history() expected 0 arguments but got {len(args)}")
+        return list(self._command_history)
+
     def _host_sleep(self, args: list[object], line_number: int) -> int:
         if len(args) != 1:
             raise PebbleError(f"line {line_number}: sleep() expected 1 argument but got {len(args)}")
@@ -3074,6 +3291,10 @@ class PebbleShell(cmd.Cmd):
     def _load_shell_profile(self) -> None:
         try:
             self._source_shell_file("/etc/profile")
+        except (FileSystemError, PebbleError, ValueError):
+            pass
+        try:
+            self._source_shell_file("/etc/profile.local")
         except (FileSystemError, PebbleError, ValueError):
             return
 

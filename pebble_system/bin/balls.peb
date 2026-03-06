@@ -1,0 +1,160 @@
+def make_row(width, fill):
+    out = ""
+    i = 0
+    while i < width:
+        out = out + fill
+        i = i + 1
+    return out
+
+def build_balls(count, inner_width, inner_height):
+    balls = []
+    i = 0
+    while i < count:
+        x = 1.0 + float(int_mod(i * 7, inner_width))
+        y = 1.0 + float(int_mod(i * 11, inner_height))
+        speed_x = 0.80 + float(int_mod(i * 5, 6)) * 0.32
+        if int_mod(i, 2) == 1:
+            speed_x = 0.0 - speed_x
+        speed_y = 0.0 - (0.70 + float(int_mod(i * 3, 5)) * 0.28)
+        append(balls, {"x": x, "y": y, "vx": speed_x, "vy": speed_y})
+        i = i + 1
+    return balls
+
+def clamp_balls_to_bounds(balls, inner_width, inner_height):
+    i = 0
+    while i < len(balls):
+        ball = balls[i]
+        if ball["x"] < 1.0:
+            ball["x"] = 1.0
+        if ball["x"] > float(inner_width):
+            ball["x"] = float(inner_width)
+        if ball["y"] < 1.0:
+            ball["y"] = 1.0
+        if ball["y"] > float(inner_height):
+            ball["y"] = float(inner_height)
+        balls[i] = ball
+        i = i + 1
+    return 0
+
+def draw_box(width, height, balls, frame):
+    clear_screen()
+    move_cursor(1, 1)
+    draw_text("100 PHYSICS BALLS  gravity  q quit  frame " + str(frame) + "  " + str(width) + "x" + str(height))
+
+    move_cursor(2, 1)
+    draw_text("+" + make_row(width - 2, "-") + "+")
+
+    row = 0
+    while row < height - 2:
+        move_cursor(row + 3, 1)
+        draw_text("|" + make_row(width - 2, " ") + "|")
+        row = row + 1
+
+    move_cursor(height + 1, 1)
+    draw_text("+" + make_row(width - 2, "-") + "+")
+
+    i = 0
+    while i < len(balls):
+        draw_x = int(balls[i]["x"] + 0.5)
+        draw_y = int(balls[i]["y"] + 0.5)
+        if draw_x >= 1 and draw_x <= width - 2 and draw_y >= 1 and draw_y <= height - 2:
+            move_cursor(draw_y + 2, draw_x + 1)
+            draw_text("o")
+        i = i + 1
+
+    flush_screen()
+    return 0
+
+def step_balls(balls, inner_width, inner_height, gravity, bounce, drag):
+    i = 0
+    while i < len(balls):
+        ball = balls[i]
+
+        ball["vy"] = ball["vy"] + gravity
+        ball["vx"] = ball["vx"] * (1.0 - drag)
+        ball["vy"] = ball["vy"] * (1.0 - drag * 0.3)
+
+        next_x = ball["x"] + ball["vx"]
+        next_y = ball["y"] + ball["vy"]
+
+        if next_x < 1.0:
+            next_x = 1.0 + (1.0 - next_x)
+            ball["vx"] = abs(ball["vx"]) * bounce
+        elif next_x > float(inner_width):
+            next_x = float(inner_width) - (next_x - float(inner_width))
+            ball["vx"] = 0.0 - abs(ball["vx"]) * bounce
+
+        if next_y < 1.0:
+            next_y = 1.0 + (1.0 - next_y)
+            ball["vy"] = abs(ball["vy"]) * bounce
+        elif next_y > float(inner_height):
+            next_y = float(inner_height) - (next_y - float(inner_height))
+            ball["vy"] = 0.0 - abs(ball["vy"]) * bounce
+            if abs(ball["vy"]) < 0.35:
+                ball["vy"] = 0.0 - 0.35
+
+        ball["x"] = next_x
+        ball["y"] = next_y
+        balls[i] = ball
+        i = i + 1
+    return 0
+
+balls = []
+frame = 0
+running = 1
+gravity = 0.28
+bounce = 0.90
+drag = 0.005
+max_frames = 120
+
+tty = tty_state()
+interactive = tty["interactive"]
+last_small = 0
+
+hide_cursor()
+
+while running:
+    tty = tty_state()
+    width = tty["cols"]
+    height = tty["rows"] - 2
+
+    if width < 24 or height < 12:
+        if last_small == 0:
+            clear_screen()
+            move_cursor(1, 1)
+            draw_text("terminal too small for balls")
+            flush_screen()
+            last_small = 1
+        if interactive:
+            key = read_key_timeout(80)
+            if key == "q" or key == "Q" or key == "ESC":
+                running = 0
+        else:
+            running = 0
+    else:
+        inner_width = width - 2
+        inner_height = height - 2
+        if len(balls) == 0:
+            balls = build_balls(100, inner_width, inner_height)
+        else:
+            clamp_balls_to_bounds(balls, inner_width, inner_height)
+
+        last_small = 0
+        draw_box(width, height, balls, frame)
+
+        if interactive:
+            key = read_key_timeout(25)
+            if key == "q" or key == "Q" or key == "ESC":
+                running = 0
+        else:
+            if frame >= max_frames:
+                running = 0
+
+        if running:
+            step_balls(balls, inner_width, inner_height, gravity, bounce, drag)
+            frame = frame + 1
+
+clear_screen()
+move_cursor(1, 1)
+show_cursor()
+print "100 bouncing balls finished."

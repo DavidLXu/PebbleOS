@@ -1,0 +1,139 @@
+import math
+
+def make_row(width, fill):
+    out = ""
+    i = 0
+    while i < width:
+        out = out + fill
+        i = i + 1
+    return out
+
+def clamp(value, low, high):
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
+
+def wall_text(count):
+    out = ""
+    i = 0
+    while i < count:
+        if int_mod(i, 2) == 0:
+            out = out + "\u001b[01;35m#\u001b[00m"
+        else:
+            out = out + "\u001b[00;95m#\u001b[00m"
+        i = i + 1
+    return out
+
+def draw_line(row, width, center, gap):
+    left_wall = int(center - gap)
+    right_wall = int(center + gap)
+    if left_wall < 1:
+        left_wall = 1
+    if right_wall > width:
+        right_wall = width
+
+    line = ""
+    x = 1
+    while x <= width:
+        if x <= left_wall or x >= right_wall:
+            if int_mod(x + row, 2) == 0:
+                line = line + "\u001b[01;35m#\u001b[00m"
+            else:
+                line = line + "\u001b[00;95m#\u001b[00m"
+        else:
+            if x == int(center):
+                line = line + "\u001b[00;90m.\u001b[00m"
+            else:
+                line = line + " "
+        x = x + 1
+    move_cursor(row, 1)
+    draw_text(line)
+    return [left_wall, right_wall]
+
+tty = tty_state()
+interactive = tty["interactive"]
+frame = 0
+running = 1
+offset = 0
+max_frames = 120
+if interactive == 0:
+    max_frames = 18
+player = 0
+
+hide_cursor()
+
+while running:
+    tty = tty_state()
+    width = tty["cols"]
+    height = tty["rows"]
+    if interactive == 0:
+        if width > 40:
+            width = 40
+        if height > 14:
+            height = 14
+    if width < 28 or height < 12:
+        clear_screen()
+        move_cursor(1, 1)
+        draw_text("terminal too small for tunnel")
+        flush_screen()
+        if interactive:
+            key = read_key_timeout(80)
+            if key == "q" or key == "Q" or key == "ESC":
+                running = 0
+        else:
+            running = 0
+    else:
+        if player == 0:
+            player = int(width / 2)
+        clear_screen()
+        move_cursor(1, 1)
+        draw_text("TUNNEL RACER  A/D or arrows  Q quit  frame " + str(frame))
+        move_cursor(2, 1)
+        draw_text(make_row(width, " "))
+
+        row = 3
+        last_bounds = [1, width]
+        while row <= height - 1:
+            row_phase = offset + row * 9
+            drift = math.sin(row_phase) / 2400
+            squeeze = math.cos(offset + row * 5) / 4200
+            center = int(width / 2) + drift
+            gap = int(width / 4) + squeeze
+            if gap < 6:
+                gap = 6
+            if gap > int(width / 2) - 2:
+                gap = int(width / 2) - 2
+            last_bounds = draw_line(row, width, center, gap)
+            row = row + 1
+
+        move_cursor(height, player)
+        draw_text("\u001b[01;36mA\u001b[00m")
+        flush_screen()
+
+        if interactive:
+            key = read_key_timeout(35)
+            if key == "q" or key == "Q" or key == "ESC":
+                running = 0
+            elif key == "a" or key == "A" or key == "LEFT":
+                player = player - 2
+            elif key == "d" or key == "D" or key == "RIGHT":
+                player = player + 2
+        else:
+            if frame >= max_frames:
+                running = 0
+            wobble = math.sin(offset + 90) / 7000
+            player = int(player + wobble)
+
+        player = clamp(player, 2, width - 1)
+        if player <= last_bounds[0] or player >= last_bounds[1]:
+            running = 0
+
+        offset = offset + 9
+        frame = frame + 1
+
+clear_screen()
+move_cursor(1, 1)
+show_cursor()
+print "Tunnel finished."

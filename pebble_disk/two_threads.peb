@@ -1,0 +1,29 @@
+source_a = ""
+source_a = source_a + 'print "alpha tick 10"\n'
+source_a = source_a + 'print "alpha tick 11"\n'
+source_a = source_a + 'print "alpha tick 12"\n'
+source_a = source_a + 'print "alpha done"\n'
+
+source_b = ""
+source_b = source_b + 'print "beta tick 20"\n'
+source_b = source_b + 'print "beta tick 21"\n'
+source_b = source_b + 'print "beta tick 22"\n'
+source_b = source_b + 'print "beta done"\n'
+
+print "starting two threads"
+
+tid_a = thread_spawn_source("alpha-worker", source_a, [])
+tid_b = thread_spawn_source("beta-worker", source_b, [])
+
+print "spawned alpha tid=" + str(tid_a)
+print "spawned beta tid=" + str(tid_b)
+print "status alpha=" + thread_status(tid_a)
+print "status beta=" + thread_status(tid_b)
+
+record_a = thread_join(tid_a)
+record_b = thread_join(tid_b)
+
+print "joined alpha state=" + record_a["state"]
+print "joined beta state=" + record_b["state"]
+print "alpha outputs=" + str(record_a["outputs"])
+print "beta outputs=" + str(record_b["outputs"])

@@ -424,6 +424,11 @@ class Parser:
 
     def _prepare_lines(self, source: str) -> list[SourceLine]:
         prepared: list[SourceLine] = []
+        current_number: int | None = None
+        current_indent: int | None = None
+        current_parts: list[str] = []
+        bracket_depth = 0
+
         for number, raw_line in enumerate(source.splitlines(), start=1):
             if "\t" in raw_line:
                 raise PebbleError(f"line {number}: tabs are not allowed; use four spaces")
@@ -436,10 +441,33 @@ class Parser:
             indent_spaces = len(cleaned_line) - len(stripped)
             if indent_spaces % 4 != 0:
                 raise PebbleError(f"line {number}: indentation must use multiples of four spaces")
+            text = stripped.rstrip()
 
-            prepared.append(
-                SourceLine(number=number, indent=indent_spaces // 4, text=stripped.rstrip())
-            )
+            if current_number is None:
+                current_number = number
+                current_indent = indent_spaces // 4
+                current_parts = [text]
+            else:
+                current_parts.append(text.strip())
+
+            bracket_depth += self._bracket_delta(text, number)
+            if bracket_depth < 0:
+                raise PebbleError(f"line {number}: unmatched closing bracket")
+
+            if bracket_depth == 0:
+                prepared.append(
+                    SourceLine(
+                        number=current_number,
+                        indent=current_indent if current_indent is not None else 0,
+                        text=" ".join(part for part in current_parts if part),
+                    )
+                )
+                current_number = None
+                current_indent = None
+                current_parts = []
+
+        if current_number is not None:
+            raise PebbleError(f"line {current_number}: unterminated bracketed expression")
         return prepared
 
     def _strip_comment(self, raw_line: str) -> str:
@@ -467,6 +495,34 @@ class Parser:
             out = out + ch
             i = i + 1
         return out.rstrip()
+
+    def _bracket_delta(self, text: str, line_number: int) -> int:
+        depth = 0
+        in_string = 0
+        quote = ""
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if in_string:
+                if ch == "\\" and i + 1 < len(text):
+                    i = i + 2
+                    continue
+                if ch == quote:
+                    in_string = 0
+                    quote = ""
+                i = i + 1
+                continue
+            if ch == '"' or ch == "'":
+                in_string = 1
+                quote = ch
+                i = i + 1
+                continue
+            if ch == "(" or ch == "[" or ch == "{":
+                depth = depth + 1
+            elif ch == ")" or ch == "]" or ch == "}":
+                depth = depth - 1
+            i = i + 1
+        return depth
 
     def _parse_block(self, expected_indent: int) -> list[Stmt]:
         statements: list[Stmt] = []

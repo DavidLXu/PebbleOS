@@ -1,0 +1,26 @@
+import math
+import matplotlib
+
+print "Matplotlib ASCII demo (Pebble)"
+print "Function: 0.65*sin(9x) + 0.25*cos(5x) + 0.08*x + ripple"
+
+values = []
+x = 0
+while x < 140:
+    w1 = math.sin(x * 9) / 1600
+    w2 = math.cos(x * 5) / 4000
+    trend = x / 12
+    bucket = int(x / 11)
+    ripple = (x - bucket * 11) - 5
+    y = w1 + w2 + trend + ripple
+    append(values, y)
+    x = x + 1
+
+print matplotlib.render(values, 18)
+print ""
+print "Sample points (index -> value):"
+print "0 -> " + str(values[0])
+print "20 -> " + str(values[20])
+print "40 -> " + str(values[40])
+print "80 -> " + str(values[80])
+print "120 -> " + str(values[120])
