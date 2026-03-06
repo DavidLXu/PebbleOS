@@ -1263,7 +1263,7 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: net_http_get() expects (string, int)")
         if timeout_ms < 1:
             raise PebbleError(f"line {line_number}: net_http_get() timeout must be positive")
-        request = urllib.request.Request(url, headers={"User-Agent": "PebbleOS/0.1.2"})
+        request = urllib.request.Request(url, headers={"User-Agent": "PebbleOS/0.2.0"})
         insecure_tls = 0
         try:
             try:
@@ -1332,7 +1332,7 @@ class PebbleShell(cmd.Cmd):
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}",
-                "User-Agent": "PebbleOS/0.1.2",
+                "User-Agent": "PebbleOS/0.2.0",
             },
             method="POST",
         )

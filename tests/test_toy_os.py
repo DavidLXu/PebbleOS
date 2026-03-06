@@ -618,7 +618,7 @@ class PebbleInterpreterTests(unittest.TestCase):
             ),
             initial_globals={"FS_MODE": "hostfs"},
         )
-        self.assertEqual(output, ["0.1.2", "Pebble OS 0.1.2"])
+        self.assertEqual(output, ["0.2.0", "Pebble OS 0.2.0"])
 
     def test_import_net_module_wraps_host_network_functions(self) -> None:
         runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
@@ -711,7 +711,7 @@ class PebbleInterpreterTests(unittest.TestCase):
             runtime_source + "\n" + version_source,
             initial_globals={"FS_MODE": "hostfs", "ARGV": [], "ARGC": 0},
         )
-        self.assertEqual(version_out, ["0.1.2"])
+        self.assertEqual(version_out, ["0.2.0"])
         uname_out = PebbleInterpreter(
             path_resolver=resolve_repo_system_path,
             host_functions=host_functions,
@@ -719,7 +719,7 @@ class PebbleInterpreterTests(unittest.TestCase):
             runtime_source + "\n" + uname_source,
             initial_globals={"FS_MODE": "hostfs", "ARGV": ["-r"], "ARGC": 1},
         )
-        self.assertEqual(uname_out, ["0.1.2"])
+        self.assertEqual(uname_out, ["0.2.0"])
 
     def test_import_memory_module_provides_virtual_ram(self) -> None:
         runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")

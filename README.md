@@ -9,7 +9,7 @@ This project is a tiny operating system simulator with:
 
 Detailed architecture notes:
 
-- current release: `0.1.2` ([VERSION](VERSION))
+- current release: `0.2.0` ([VERSION](VERSION))
 - changelog: [CHANGELOG.md](CHANGELOG.md)
 - release/versioning policy: [docs/VERSIONING.md](docs/VERSIONING.md)
 - filesystem: [FILESYSTEM.md](FILESYSTEM.md)
@@ -22,6 +22,7 @@ Detailed architecture notes:
 - tty/input semantics: [docs/TTY_INPUT.md](docs/TTY_INPUT.md)
 - physics simulator usage: [docs/PHYSICS_SIMULATOR.md](docs/PHYSICS_SIMULATOR.md)
 - Pebble vs Python 3.x language gaps: [docs/PEBBLE_LANGUAGE_GAPS.md](docs/PEBBLE_LANGUAGE_GAPS.md)
+- Pebble source/parser/AST/runtime flowchart: [docs/pebble-flowchart.html](docs/pebble-flowchart.html)
 
 ## Pebble language
 
@@ -221,7 +222,7 @@ That preparation phase added:
 - added a Pebble-native `torch`-style module (`import torch`) with tensor ops and SGD helpers, plus an `mnist_train.peb` demo that trains a tiny MNIST-like digit classifier in Pebble userland
 - changed `pebble` so running it without arguments opens an interactive Pebble REPL, while `pebble FILE [ARGS...]` still runs scripts
 - Pebble language now supports `class` definitions in both interpreter and bytecode modes, including instance methods, `__init__` constructors, and bound method values
-- established formal release/version management for the repo and runtime, with `VERSION`, `CHANGELOG.md`, `docs/VERSIONING.md`, runtime version constants, and a Pebble `version` command aligned to release `0.1.2`
+- established formal release/version management for the repo and runtime, with `VERSION`, `CHANGELOG.md`, `docs/VERSIONING.md`, runtime version constants, and a Pebble `version` command aligned to release `0.2.0`
 - top-level module imports now auto-resolve `numpy` and `torch` from `system/lib`, so `import numpy` / `import torch` work without wrapper files in the user disk
 - fixed `pebble` REPL evaluation state so definitions now persist across input lines (`a=1` then `print a` works in the same REPL session)
 - improved shell UX with Ubuntu-style colored prompt in interactive terminals and colorized `ls` output to distinguish directories and regular files

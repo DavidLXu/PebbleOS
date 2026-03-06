@@ -4,6 +4,18 @@ All notable changes to PebbleOS are documented in this file.
 
 Versioning policy: [docs/VERSIONING.md](docs/VERSIONING.md)
 
+## [0.2.0] - 2026-03-07
+
+Feature release focused on making PebbleOS feel like a real playful operating
+system rather than only a bootstrap runtime.
+
+- Updated version metadata to `0.2.0` across repository and runtime-visible APIs.
+- Added a chatbot command and OpenAI-compatible chat wrapper, making AI-assisted interaction part of the shell experience.
+- Added a large set of small games, simulations, and terminal scenes including trains, balls, starfield, tunnel, snake, rainfire, matrix, clocks, plotting, and guided welcome flows.
+- Expanded network-facing capabilities with Pebble-visible networking libraries and userland commands such as `ping`, `fetch`, `curl`, and `wget`.
+- Improved shell usability with colorized prompts, richer command help, direct-command launch flow, history, clear, and more system-style tooling.
+- Strengthened the Pebble language/runtime stack with parser improvements for multiline bracketed expressions, continued bytecode/interpreter support, and broader runtime documentation.
+
 ## [0.1.2] - 2026-03-06
 
 Maintenance release focused on simulator and shell/runtime quality improvements.

@@ -37,8 +37,8 @@ TTY_MODE_RAW = "raw"
 OS_NAME = "PebbleOS"
 OS_HOSTNAME = "pebble-os"
 OS_MACHINE = "pebble-vm"
-OS_RELEASE = "0.1.2"
-OS_VERSION = "Pebble OS 0.1.2"
+OS_RELEASE = "0.2.0"
+OS_VERSION = "Pebble OS 0.2.0"
 
 DEFAULT_PATH = ["/system/bin", "/bin"]
 DEFAULT_ENV = {"PATH": "/system/bin:/bin", "HOME": "/", "USER": "root", "SHELL": "/system/bin/sh.peb"}
