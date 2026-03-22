@@ -1,4 +1,5 @@
 import argparse
+import sys
 from pathlib import Path
 
 from pebble_bootloader.lang import PebbleError
@@ -13,9 +14,23 @@ if __name__ == "__main__":
         choices=sorted(VALID_FS_MODES),
         help="filesystem backend mode",
     )
+    parser.add_argument(
+        "--allow-system-writes",
+        action="store_true",
+        help="allow modifications to mounted system files",
+    )
+    parser.add_argument(
+        "--insecure-tls",
+        action="store_true",
+        help="retry HTTPS requests without certificate verification after a TLS validation failure",
+    )
     args = parser.parse_args()
 
-    shell = build_shell(fs_mode=args.fs_mode)
+    shell = build_shell(
+        fs_mode=args.fs_mode,
+        allow_system_writes=args.allow_system_writes,
+        allow_insecure_tls=args.insecure_tls,
+    )
     runtime_path = shell.fs.resolve_path("system/runtime.peb")
     shell_path = shell.fs.resolve_path("system/shell.peb")
     runtime_source = runtime_path.read_text(encoding="utf-8")
@@ -34,5 +49,6 @@ if __name__ == "__main__":
         )
     except PebbleError as exc:
         print(f"[boot error] {exc}")
+        sys.exit(1)
 
     shell.cmdloop()

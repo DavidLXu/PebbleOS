@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import io
+import ssl
+import shutil
 import tempfile
 import termios
 import threading
@@ -10,16 +12,19 @@ import time
 import unittest
 import types
 import itertools
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
 from pebble_bootloader.fs import FileSystemError, FlatFileSystem
 from pebble_bootloader.lang import PebbleBytecodeInterpreter, PebbleError, PebbleInterpreter
-from pebble_bootloader.shell import build_shell
+from pebble_bootloader.shell import build_shell as runtime_build_shell
 
-REPO_ROOT = Path("/Users/xulixin/LX_OS")
+REPO_ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_ROOT = REPO_ROOT / "pebble_system"
+DISK_ROOT = REPO_ROOT / "pebble_disk"
+TEST_SHELL_ROOT: Path | None = None
 RUN_SLOW_TESTS = os.environ.get("PEBBLE_RUN_SLOW_TESTS") == "1"
 slow_test = unittest.skipUnless(RUN_SLOW_TESTS, "set PEBBLE_RUN_SLOW_TESTS=1 to run slow shell integration tests")
 
@@ -28,6 +33,32 @@ def resolve_repo_system_path(name: str) -> Path:
     if name.startswith("system/"):
         return SYSTEM_ROOT / name[len("system/") :]
     return REPO_ROOT / name
+
+
+def build_shell(fs_mode: str = "hostfs", **kwargs):
+    if "root" not in kwargs or kwargs["root"] is None:
+        kwargs["root"] = TEST_SHELL_ROOT
+    # Keep default behavior unless tests explicitly opt-in to mutating the repo system tree.
+    if "allow_system_writes" not in kwargs:
+        kwargs["allow_system_writes"] = False
+    return runtime_build_shell(fs_mode=fs_mode, **kwargs)
+
+
+class ShellTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._shell_root_dir = tempfile.TemporaryDirectory()
+        self.shell_root = Path(self._shell_root_dir.name)
+        shutil.copytree(DISK_ROOT, self.shell_root, dirs_exist_ok=True)
+        global TEST_SHELL_ROOT
+        self._previous_test_shell_root = TEST_SHELL_ROOT
+        TEST_SHELL_ROOT = self.shell_root
+
+    def tearDown(self) -> None:
+        global TEST_SHELL_ROOT
+        TEST_SHELL_ROOT = self._previous_test_shell_root
+        self._shell_root_dir.cleanup()
+        super().tearDown()
 
 
 class FlatFileSystemTests(unittest.TestCase):
@@ -69,6 +100,13 @@ class FlatFileSystemTests(unittest.TestCase):
         self.fs.create_file("system/runtime.peb", "print 1")
         self.assertEqual(self.fs.read_file("system/runtime.peb"), "print 1")
         self.assertIn("system/runtime.peb", self.fs.list_files())
+
+    def test_can_mark_mount_read_only(self) -> None:
+        system_dir = Path(self.temp_dir.name) / "system"
+        system_dir.mkdir()
+        self.fs.mount("system", system_dir, read_only=True)
+        with self.assertRaises(FileSystemError):
+            self.fs.create_file("system/runtime.peb", "print 1")
 
     def test_reports_file_time_for_flat_files(self) -> None:
         self.fs.create_file("clock.txt", "hi")
@@ -3672,6 +3710,24 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         self.assertTrue(any("\t1.5KB\tls_size_big.txt" in line for line in outputs))
         self.assertTrue(any("\t3B\tls_size_dir" in line for line in outputs))
 
+    def test_runtime_ls_handles_binary_files_without_utf8_decode_errors(self) -> None:
+        shell = build_shell()
+        target = shell.fs.resolve_path("ls_binary.bin")
+        outputs: list[str] = []
+        try:
+            target.write_bytes(b"\xd9\x80\x00\xff")
+            with patch(
+                "builtins.print",
+                side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts)),
+            ):
+                shell.onecmd("ls")
+        finally:
+            if target.exists():
+                target.unlink()
+
+        self.assertTrue(any(line.endswith("\tls_binary.bin") for line in outputs))
+        self.assertFalse(any("utf-8" in line for line in outputs))
+
     def test_root_ls_shows_only_direct_children(self) -> None:
         shell = build_shell()
         outputs: list[str] = []
@@ -3830,6 +3886,55 @@ class PebbleShellRuntimeTests(unittest.TestCase):
                     shell.onecmd("ping localhost 80")
 
         self.assertTrue(any(line.startswith("tcp pong localhost:80") for line in outputs))
+
+    def test_system_files_are_read_only_by_default(self) -> None:
+        shell = build_shell()
+        with self.assertRaises(PebbleError) as error:
+            shell._host_modify_file(["/system/runtime.peb", "print 0"], 1)
+        self.assertIn("read-only", str(error.exception))
+
+    def test_raw_host_write_is_blocked_outside_hostfs(self) -> None:
+        shell = build_shell(fs_mode="mfs")
+        with self.assertRaises(PebbleError) as error:
+            shell._host_raw_write_file(["notes.txt", "hello"], 1)
+        self.assertIn("raw host writes are unavailable", str(error.exception))
+
+    def test_http_get_fails_closed_on_certificate_error_by_default(self) -> None:
+        shell = build_shell()
+        cert_error = urllib.error.URLError(ssl.SSLCertVerificationError(1, "CERTIFICATE_VERIFY_FAILED"))
+        with patch("pebble_bootloader.shell.urllib.request.urlopen", side_effect=cert_error):
+            result = shell._host_net_http_get(["https://example.com", 1000], 1)
+        self.assertEqual(result["ok"], 0)
+        self.assertEqual(result["insecure_tls"], 0)
+        self.assertIn("PEBBLE_INSECURE_TLS=1", result["error"])
+
+    def test_http_get_can_retry_insecure_tls_when_enabled(self) -> None:
+        shell = build_shell(allow_insecure_tls=True)
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def read(self):
+                return b"hello network"
+
+            def geturl(self):
+                return "https://example.com/"
+
+            @property
+            def headers(self):
+                return {"Content-Type": "text/plain"}
+
+        cert_error = urllib.error.URLError(ssl.SSLCertVerificationError(1, "CERTIFICATE_VERIFY_FAILED"))
+        with patch("pebble_bootloader.shell.urllib.request.urlopen", side_effect=[cert_error, FakeResponse()]):
+            result = shell._host_net_http_get(["https://example.com", 1000], 1)
+        self.assertEqual(result["ok"], 1)
+        self.assertEqual(result["insecure_tls"], 1)
 
     def test_fetch_command_writes_http_body_to_file(self) -> None:
         shell = build_shell()

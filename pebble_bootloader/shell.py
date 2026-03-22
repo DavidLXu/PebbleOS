@@ -111,12 +111,21 @@ class PebbleShell(cmd.Cmd):
     )
     prompt = "pebble-os> "
 
-    def __init__(self, root: Path, fs_mode: str = "hostfs") -> None:
+    def __init__(
+        self,
+        root: Path,
+        fs_mode: str = "hostfs",
+        *,
+        allow_system_writes: bool = False,
+        allow_insecure_tls: bool = False,
+    ) -> None:
         super().__init__()
         if fs_mode not in VALID_FS_MODES:
             raise ValueError(f"invalid fs mode '{fs_mode}'")
         self.fs = FlatFileSystem(root)
         self.fs_mode = fs_mode
+        self.allow_system_writes = allow_system_writes
+        self.allow_insecure_tls = allow_insecure_tls
         self.cwd = "/"
         self._color_enabled = self._detect_color_support()
         self.env: dict[str, str] = {
@@ -128,6 +137,7 @@ class PebbleShell(cmd.Cmd):
         self.mfs_blob: str | None = None
         self._jobs: dict[int, BackgroundJob] = {}
         self._jobs_lock = threading.Lock()
+        self._id_lock = threading.Lock()
         self._next_job_id = 1
         self._vm_tasks: dict[int, VMTask] = {}
         self._vm_lock = threading.Lock()
@@ -155,7 +165,11 @@ class PebbleShell(cmd.Cmd):
         self._terminal_owner_thread_id: int | None = None
         self._foreground_terminal_raw = False
         self._shell_terminal_settings = self._capture_terminal_settings()
-        self.fs.mount("system", Path(__file__).resolve().parent.parent / "pebble_system")
+        self.fs.mount(
+            "system",
+            Path(__file__).resolve().parent.parent / "pebble_system",
+            read_only=not self.allow_system_writes,
+        )
         self._ensure_phase4_layout()
         self._refresh_shell_state()
         self._load_shell_profile()
@@ -726,6 +740,36 @@ class PebbleShell(cmd.Cmd):
             return self._fd_readline(self._active_stdin_fd)
         return input(prompt)
 
+    def _next_record_id(self) -> int:
+        with self._id_lock:
+            record_id = self._next_job_id
+            self._next_job_id = self._next_job_id + 1
+        return record_id
+
+    def _is_internal_raw_storage_name(self, name: str) -> bool:
+        return (
+            name in {".__pebble_vfs__.db", ".__pebble_run_shadow__.peb", ".__pebble_nano_shadow__.txt"}
+            or name.startswith(".__pebble_shadow__")
+            or name.startswith(".__pebble_dir__/")
+        )
+
+    def _ensure_logical_path_writable(self, logical_path: str) -> None:
+        if logical_path == "/system" or logical_path.startswith("/system/"):
+            if not self.allow_system_writes:
+                raise FileSystemError("system files are read-only; set PEBBLE_ALLOW_SYSTEM_WRITES=1 to modify them")
+
+    def _ensure_raw_storage_write_allowed(self, name: str) -> None:
+        logical_name = name if name.startswith("/") else "/" + name
+        logical_path = self._normalize_user_path(logical_name, "/")
+        self._ensure_logical_path_writable(logical_path)
+        if (
+            self.fs_mode != "hostfs"
+            and not self._is_internal_raw_storage_name(name)
+            and logical_path != "/system"
+            and not logical_path.startswith("/system/")
+        ):
+            raise FileSystemError(f"raw host writes are unavailable in filesystem mode '{self.fs_mode}'")
+
     def _open_fd_record(self, logical_path: str, mode: str) -> int:
         device_kind = self._device_kind_for_path(logical_path)
         if device_kind != "":
@@ -736,6 +780,7 @@ class PebbleShell(cmd.Cmd):
         if mode == "r" and not path.exists():
             raise FileNotFoundError(f"[Errno 2] No such file or directory: '{logical_path}'")
         if mode in {"w", "a"}:
+            self._ensure_logical_path_writable(logical_path)
             path.parent.mkdir(parents=True, exist_ok=True)
         fd = self._next_fd
         self._next_fd = self._next_fd + 1
@@ -957,6 +1002,7 @@ class PebbleShell(cmd.Cmd):
             self.mfs_blob = text
             return text
         try:
+            self._ensure_raw_storage_write_allowed(name)
             path = self._resolve_storage_path_to_host(name)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
@@ -974,6 +1020,7 @@ class PebbleShell(cmd.Cmd):
     def _host_raw_create_file(self, args: list[object], line_number: int) -> int:
         name, text = self._require_name_and_text("raw_create_file", args, line_number)
         try:
+            self._ensure_raw_storage_write_allowed(name)
             path = self._resolve_storage_path_to_host(name)
             if path.exists():
                 raise FileSystemError(f"file '{name}' already exists")
@@ -986,6 +1033,7 @@ class PebbleShell(cmd.Cmd):
     def _host_raw_modify_file(self, args: list[object], line_number: int) -> int:
         name, text = self._require_name_and_text("raw_modify_file", args, line_number)
         try:
+            self._ensure_raw_storage_write_allowed(name)
             path = self._resolve_storage_path_to_host(name)
             if not path.exists():
                 raise FileSystemError(f"file '{name}' does not exist")
@@ -997,6 +1045,7 @@ class PebbleShell(cmd.Cmd):
     def _host_raw_delete_file(self, args: list[object], line_number: int) -> int:
         name = self._require_string_arg("raw_delete_file", args, line_number, 1)
         try:
+            self._ensure_raw_storage_write_allowed(name)
             path = self._resolve_storage_path_to_host(name)
             if not path.exists():
                 raise FileSystemError(f"file '{name}' does not exist")
@@ -1008,6 +1057,7 @@ class PebbleShell(cmd.Cmd):
     def _host_raw_make_directory(self, args: list[object], line_number: int) -> int:
         name = self._require_string_arg("raw_make_directory", args, line_number, 1)
         try:
+            self._ensure_raw_storage_write_allowed(name)
             path = self._resolve_storage_path_to_host(name)
             if path.exists():
                 raise FileSystemError(f"directory '{name}' already exists")
@@ -1019,6 +1069,7 @@ class PebbleShell(cmd.Cmd):
     def _host_raw_remove_directory(self, args: list[object], line_number: int) -> int:
         name = self._require_string_arg("raw_remove_directory", args, line_number, 1)
         try:
+            self._ensure_raw_storage_write_allowed(name)
             path = self._resolve_storage_path_to_host(name)
             if not path.exists() or not path.is_dir():
                 raise FileSystemError(f"directory '{name}' does not exist")
@@ -1050,6 +1101,7 @@ class PebbleShell(cmd.Cmd):
         name, text = self._require_name_and_text("create_file", args, line_number)
         try:
             path = self._resolve_user_path_to_host(name)
+            self._ensure_logical_path_writable(self._normalize_user_path(name))
             if path.exists():
                 raise FileSystemError(f"file '{name}' already exists")
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1062,6 +1114,7 @@ class PebbleShell(cmd.Cmd):
         name = self._require_string_arg("make_directory", args, line_number, 1)
         try:
             path = self._resolve_user_path_to_host(name)
+            self._ensure_logical_path_writable(self._normalize_user_path(name))
             if path.exists():
                 raise FileSystemError(f"directory '{name}' already exists")
             path.mkdir(parents=True, exist_ok=False)
@@ -1073,6 +1126,7 @@ class PebbleShell(cmd.Cmd):
         name, text = self._require_name_and_text("modify_file", args, line_number)
         try:
             path = self._resolve_user_path_to_host(name)
+            self._ensure_logical_path_writable(self._normalize_user_path(name))
             if not path.exists():
                 raise FileSystemError(f"file '{name}' does not exist")
             path.write_text(text, encoding="utf-8")
@@ -1084,6 +1138,7 @@ class PebbleShell(cmd.Cmd):
         name = self._require_string_arg("remove_directory", args, line_number, 1)
         try:
             path = self._resolve_user_path_to_host(name)
+            self._ensure_logical_path_writable(self._normalize_user_path(name))
             if not path.exists() or not path.is_dir():
                 raise FileSystemError(f"directory '{name}' does not exist")
             path.rmdir()
@@ -1095,6 +1150,7 @@ class PebbleShell(cmd.Cmd):
         name = self._require_string_arg("delete_file", args, line_number, 1)
         try:
             path = self._resolve_user_path_to_host(name)
+            self._ensure_logical_path_writable(self._normalize_user_path(name))
             if not path.exists():
                 raise FileSystemError(f"file '{name}' does not exist")
             path.unlink()
@@ -1275,6 +1331,10 @@ class PebbleShell(cmd.Cmd):
                 reason = getattr(exc, "reason", None)
                 if not isinstance(reason, ssl.SSLCertVerificationError) and "CERTIFICATE_VERIFY_FAILED" not in str(exc):
                     raise
+                if not self.allow_insecure_tls:
+                    raise urllib.error.URLError(
+                        str(exc) + " (set PEBBLE_INSECURE_TLS=1 to retry without certificate verification)"
+                    ) from exc
                 insecure_tls = 1
                 response_context = urllib.request.urlopen(
                     request,
@@ -1347,6 +1407,10 @@ class PebbleShell(cmd.Cmd):
                 reason = getattr(exc, "reason", None)
                 if not isinstance(reason, ssl.SSLCertVerificationError) and "CERTIFICATE_VERIFY_FAILED" not in str(exc):
                     raise
+                if not self.allow_insecure_tls:
+                    raise urllib.error.URLError(
+                        str(exc) + " (set PEBBLE_INSECURE_TLS=1 to retry without certificate verification)"
+                    ) from exc
                 insecure_tls = 1
                 response_context = urllib.request.urlopen(
                     request,
@@ -1613,6 +1677,22 @@ class PebbleShell(cmd.Cmd):
         argv = args[1]
         if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
             raise PebbleError(f"line {line_number}: vm_create_task() expects a list of string arguments")
+        return self._create_vm_task_from_source(args[0], argv, line_number)
+
+    def _create_vm_task_from_source(
+        self,
+        source: str,
+        argv: list[str],
+        line_number: int,
+        *,
+        command: str = "vm",
+        program: str = "<source>",
+        cwd: str | None = None,
+        ppid: int = 1,
+        pgid: int = 0,
+        sid: int = 1,
+    ) -> int:
+        cwd_value = self.cwd if cwd is None else cwd
         runtime = self._make_runtime(consume_output=False)
         task_ref: dict[str, VMTask | None] = {"task": None}
         host_functions = dict(runtime.host_functions)
@@ -1628,7 +1708,7 @@ class PebbleShell(cmd.Cmd):
             self.fs.root,
             input_provider=lambda prompt="": self._vm_task_input_provider(task_ref["task"], prompt),
             output_consumer=None,
-            path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, self.cwd)),
+            path_resolver=lambda path: self._logical_path_to_host(self._normalize_user_path(path, cwd_value)),
             host_functions=host_functions,
         )
         initial_globals = {
@@ -1636,23 +1716,25 @@ class PebbleShell(cmd.Cmd):
             "ARGC": len(argv),
             "SYSTEM_RUNTIME_PATH": "system/runtime.peb",
             "FS_MODE": self.fs_mode,
-            "CWD": self.cwd,
+            "CWD": cwd_value,
             "ENV": dict(self._runtime_env_override or self.env),
             "PATH": str((self._runtime_env_override or self.env).get("PATH", "")),
         }
         try:
-            interpreter.prepare(args[0], initial_globals=initial_globals)
+            interpreter.prepare(source, initial_globals=initial_globals)
         except (FileSystemError, PebbleError) as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
-        task_id = self._next_job_id
-        self._next_job_id = self._next_job_id + 1
+        task_id = self._next_record_id()
         task = VMTask(
             task_id=task_id,
-            command="vm",
-            program="<source>",
+            command=command,
+            program=program,
             argv=list(argv),
-            cwd=self.cwd,
+            cwd=cwd_value,
             interpreter=interpreter,
+            ppid=ppid,
+            pgid=pgid,
+            sid=sid,
         )
         task_ref["task"] = task
         with self._vm_lock:
@@ -1662,34 +1744,49 @@ class PebbleShell(cmd.Cmd):
     def _host_vm_step_task(self, args: list[object], line_number: int) -> int:
         if len(args) != 2 or not isinstance(args[0], int) or not isinstance(args[1], int):
             raise PebbleError(f"line {line_number}: vm_step_task() expects task id and step count integers")
+        claimed = False
         with self._vm_lock:
             task = self._vm_tasks.get(args[0])
+            if task is not None and task.status not in {
+                "halted",
+                "error",
+                "blocked-input",
+                "blocked-tty",
+                "blocked-mutex",
+                "running",
+            }:
+                task.status = "running"
+                claimed = True
         if task is None:
             raise PebbleError(f"line {line_number}: vm task {args[0]} does not exist")
         if args[1] < 0:
             raise PebbleError(f"line {line_number}: vm_step_task() step count cannot be negative")
-        if task.status in {"halted", "error", "blocked-input", "blocked-tty", "blocked-mutex"}:
+        if not claimed:
             return 0
         try:
-            task.status = "running"
             count = self._run_vm_task_steps(task, args[1])
-            task.status = "halted" if task.interpreter.vm_state.halted else "ready"
+            with self._vm_lock:
+                task.status = "halted" if task.interpreter.vm_state.halted else "ready"
             return count
         except PebbleInputBlocked as exc:
-            task.status = "blocked-input"
-            task.input_prompt = exc.prompt
+            with self._vm_lock:
+                task.status = "blocked-input"
+                task.input_prompt = exc.prompt
             return 0
         except PebbleTTYBlocked as exc:
-            task.status = "blocked-tty"
-            task.tty_timeout_seconds = exc.timeout_seconds
+            with self._vm_lock:
+                task.status = "blocked-tty"
+                task.tty_timeout_seconds = exc.timeout_seconds
             return 0
         except PebbleMutexBlocked as exc:
-            task.status = "blocked-mutex"
-            task.blocked_mutex_id = exc.mutex_id
+            with self._vm_lock:
+                task.status = "blocked-mutex"
+                task.blocked_mutex_id = exc.mutex_id
             return 0
         except PebbleError as exc:
-            task.status = "error"
-            task.error = self._remap_program_error(str(exc), task.source_label, task.runtime_line_count)
+            with self._vm_lock:
+                task.status = "error"
+                task.error = self._remap_program_error(str(exc), task.source_label, task.runtime_line_count)
             return 0
 
     def _host_vm_task_status(self, args: list[object], line_number: int) -> str:
@@ -1751,8 +1848,7 @@ class PebbleShell(cmd.Cmd):
             host_functions=host_functions,
         )
         interpreter.restore(snapshot)
-        task_id = self._next_job_id
-        self._next_job_id = self._next_job_id + 1
+        task_id = self._next_record_id()
         task = VMTask(
             task_id=task_id,
             command="vm",
@@ -1852,8 +1948,7 @@ class PebbleShell(cmd.Cmd):
         interpreter.functions = {function_value.name: function_value.function}
         interpreter.module_cache = dict(parent_task.interpreter.module_cache)
         interpreter.module_loading = set(parent_task.interpreter.module_loading)
-        task_id = self._next_job_id
-        self._next_job_id = self._next_job_id + 1
+        task_id = self._next_record_id()
         task = VMTask(
             task_id=task_id,
             command="thread " + function_value.name,
@@ -1984,7 +2079,20 @@ class PebbleShell(cmd.Cmd):
         argv = args[2]
         if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
             raise PebbleError(f"line {line_number}: thread_spawn_source_host() expects argv as list[str]")
-        return self._host_vm_create_task([args[1], argv], line_number)
+        parent = getattr(self._vm_execution_context, "task", None)
+        if parent is None:
+            return self._create_vm_task_from_source(args[1], argv, line_number, program=args[0], command="thread " + args[0])
+        return self._create_vm_task_from_source(
+            args[1],
+            argv,
+            line_number,
+            command="thread " + args[0],
+            program=args[0],
+            cwd=parent.cwd,
+            ppid=parent.ppid,
+            pgid=parent.pgid,
+            sid=parent.sid,
+        )
 
     def _host_thread_spawn(self, args: list[object], line_number: int) -> int:
         if len(args) != 2 or not isinstance(args[0], FunctionValue) or not isinstance(args[1], list):
@@ -2004,6 +2112,9 @@ class PebbleShell(cmd.Cmd):
                 raise PebbleError(f"line {line_number}: thread {args[0]} does not exist")
             if task.status in {"halted", "error"}:
                 return self._thread_record(task)
+            if task.status in {"blocked-input", "blocked-tty", "blocked-mutex"}:
+                time.sleep(0.01)
+                continue
             self._host_vm_step_task([args[0], 50], line_number)
 
     def _host_thread_status(self, args: list[object], line_number: int) -> str:
@@ -2640,8 +2751,7 @@ class PebbleShell(cmd.Cmd):
         )
         task_ref["task"] = task
         with self._vm_lock:
-            task_id = self._next_job_id
-            self._next_job_id = self._next_job_id + 1
+            task_id = self._next_record_id()
             task.task_id = task_id
             task.pgid = task_id
             self._vm_tasks[task_id] = task
@@ -2653,25 +2763,34 @@ class PebbleShell(cmd.Cmd):
             with self._vm_lock:
                 tasks = [self._vm_tasks[key] for key in sorted(self._vm_tasks)]
             for task in tasks:
-                if task.status in {"halted", "error", "blocked-input", "blocked-tty", "blocked-mutex"} or task.attached:
-                    continue
-                try:
+                with self._vm_lock:
+                    current = self._vm_tasks.get(task.task_id)
+                    if current is not task:
+                        continue
+                    if task.status in {"halted", "error", "blocked-input", "blocked-tty", "blocked-mutex", "running"} or task.attached:
+                        continue
                     task.status = "running"
+                try:
                     self._run_vm_task_steps(task, BACKGROUND_VM_STEP_BUDGET)
-                    task.status = "halted" if task.interpreter.vm_state.halted else "ready"
+                    with self._vm_lock:
+                        task.status = "halted" if task.interpreter.vm_state.halted else "ready"
                     self._notify_sigchld_for_task(task)
                 except PebbleInputBlocked as exc:
-                    task.status = "blocked-input"
-                    task.input_prompt = exc.prompt
+                    with self._vm_lock:
+                        task.status = "blocked-input"
+                        task.input_prompt = exc.prompt
                 except PebbleTTYBlocked as exc:
-                    task.status = "blocked-tty"
-                    task.tty_timeout_seconds = exc.timeout_seconds
+                    with self._vm_lock:
+                        task.status = "blocked-tty"
+                        task.tty_timeout_seconds = exc.timeout_seconds
                 except PebbleMutexBlocked as exc:
-                    task.status = "blocked-mutex"
-                    task.blocked_mutex_id = exc.mutex_id
+                    with self._vm_lock:
+                        task.status = "blocked-mutex"
+                        task.blocked_mutex_id = exc.mutex_id
                 except PebbleError as exc:
-                    task.status = "error"
-                    task.error = self._remap_program_error(str(exc), task.source_label, task.runtime_line_count)
+                    with self._vm_lock:
+                        task.status = "error"
+                        task.error = self._remap_program_error(str(exc), task.source_label, task.runtime_line_count)
                     self._notify_sigchld_for_task(task)
 
     def _attach_foreground_vm_task(self, task_id: int) -> bool:
@@ -2945,8 +3064,7 @@ class PebbleShell(cmd.Cmd):
         program = self._normalize_user_path(name)
         cwd_value = self.cwd
         with self._jobs_lock:
-            job_id = self._next_job_id
-            self._next_job_id = self._next_job_id + 1
+            job_id = self._next_record_id()
             job = BackgroundJob(
                 job_id=job_id,
                 command=(command_name or ("execbg" if exec_mode == "bytecode" else "runbg")) + " " + program,
@@ -3060,12 +3178,23 @@ class PebbleShell(cmd.Cmd):
             if not ready:
                 return None
             first = sys.stdin.read(1)
+            if first == "\x03":
+                return "interrupt"
+            if first == "\x1a":
+                return "detach"
             if first != "\x1b":
                 return None
             ready, _, _ = select.select([sys.stdin], [], [], 0.03)
             if not ready:
                 return None
             second = sys.stdin.read(1)
+            if second == "O":
+                ready, _, _ = select.select([sys.stdin], [], [], 0.03)
+                if not ready:
+                    return None
+                third = sys.stdin.read(1)
+                if third == "P":
+                    return "detach"
             return None
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -3435,7 +3564,7 @@ class PebbleShell(cmd.Cmd):
         parts = logical_path.strip("/").split("/")
         first = parts[0]
         if first in self.fs.mounts:
-            host_root = self.fs.mounts[first]
+            host_root = self.fs.mounts[first].host_root
             if len(parts) == 1:
                 return host_root
             path = (host_root / "/".join(parts[1:])).resolve()
@@ -3587,6 +3716,22 @@ def main() -> None:
     PebbleShell(root).cmdloop()
 
 
-def build_shell(fs_mode: str = "hostfs") -> PebbleShell:
-    root = Path(__file__).resolve().parent.parent / "pebble_disk"
-    return PebbleShell(root, fs_mode=fs_mode)
+def build_shell(
+    fs_mode: str = "hostfs",
+    *,
+    root: Path | None = None,
+    allow_system_writes: bool | None = None,
+    allow_insecure_tls: bool | None = None,
+) -> PebbleShell:
+    if root is None:
+        root = Path(__file__).resolve().parent.parent / "pebble_disk"
+    if allow_system_writes is None:
+        allow_system_writes = os.environ.get("PEBBLE_ALLOW_SYSTEM_WRITES") == "1"
+    if allow_insecure_tls is None:
+        allow_insecure_tls = os.environ.get("PEBBLE_INSECURE_TLS") == "1"
+    return PebbleShell(
+        root,
+        fs_mode=fs_mode,
+        allow_system_writes=allow_system_writes,
+        allow_insecure_tls=allow_insecure_tls,
+    )

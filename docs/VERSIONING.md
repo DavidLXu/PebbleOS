@@ -20,10 +20,16 @@ All three should be updated in one change when cutting a release.
 2. Add a new section to `CHANGELOG.md`.
 3. Sync runtime-visible version constants in `system/lib/base.peb`.
 4. Verify `uname -r`, `uname -v`, and `version` output.
-5. Run tests:
-   - `python -m unittest discover -s tests`
-   - optional slow suite as needed
-6. Tag release in git:
+5. Verify the supported Python baseline:
+   - PebbleOS currently supports Python 3.9+
+6. Run tests:
+   - `python3 -m unittest discover -s tests`
+   - `PEBBLE_RUN_SLOW_TESTS=1 python3 -m unittest discover -s tests` for releases that touch shell, process, job-control, or TTY behavior
+7. Confirm boot/runtime safety defaults still match the docs:
+   - `system/...` remains read-only unless explicitly unlocked
+   - HTTPS certificate failures still fail closed unless `PEBBLE_INSECURE_TLS=1` or `--insecure-tls` is used
+   - boot failures still exit non-zero
+8. Tag release in git:
    - `git tag vX.Y.Z`
    - `git push origin vX.Y.Z`
 

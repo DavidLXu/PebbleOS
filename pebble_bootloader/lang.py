@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Union
 
 
 class PebbleError(Exception):
@@ -158,22 +158,22 @@ class DictExpr:
     line_number: int
 
 
-Expr = (
-    NumberExpr
-    | StringExpr
-    | BoolExpr
-    | NoneExpr
-    | NameExpr
-    | UnaryExpr
-    | BinaryExpr
-    | BoolOpExpr
-    | CallExpr
-    | AttrCallExpr
-    | AttrExpr
-    | ListExpr
-    | IndexExpr
-    | DictExpr
-)
+Expr = Union[
+    NumberExpr,
+    StringExpr,
+    BoolExpr,
+    NoneExpr,
+    NameExpr,
+    UnaryExpr,
+    BinaryExpr,
+    BoolOpExpr,
+    CallExpr,
+    AttrCallExpr,
+    AttrExpr,
+    ListExpr,
+    IndexExpr,
+    DictExpr,
+]
 
 
 @dataclass
@@ -213,20 +213,20 @@ class BoundMethodValue:
     instance: InstanceObject
 
 
-Value = (
-    int
-    | float
-    | bool
-    | None
-    | str
-    | ModuleObject
-    | ClassObject
-    | InstanceObject
-    | FunctionValue
-    | BoundMethodValue
-    | list["Value"]
-    | dict["Value", "Value"]
-)
+Value = Union[
+    int,
+    float,
+    bool,
+    None,
+    str,
+    ModuleObject,
+    ClassObject,
+    InstanceObject,
+    FunctionValue,
+    BoundMethodValue,
+    list["Value"],
+    dict["Value", "Value"],
+]
 HostFunction = Callable[[list[Value], int], Value]
 
 
@@ -250,7 +250,7 @@ class AttrTarget:
     line_number: int
 
 
-Target = NameTarget | IndexTarget | AttrTarget
+Target = Union[NameTarget, IndexTarget, AttrTarget]
 
 
 @dataclass
@@ -357,23 +357,23 @@ class ClassDefStmt:
     line_number: int
 
 
-Stmt = (
-    AssignStmt
-    | PrintStmt
-    | ExprStmt
-    | PassStmt
-    | BreakStmt
-    | ContinueStmt
-    | IfStmt
-    | WhileStmt
-    | ForStmt
-    | FunctionDefStmt
-    | ClassDefStmt
-    | ReturnStmt
-    | ImportStmt
-    | TryStmt
-    | RaiseStmt
-)
+Stmt = Union[
+    AssignStmt,
+    PrintStmt,
+    ExprStmt,
+    PassStmt,
+    BreakStmt,
+    ContinueStmt,
+    IfStmt,
+    WhileStmt,
+    ForStmt,
+    FunctionDefStmt,
+    ClassDefStmt,
+    ReturnStmt,
+    ImportStmt,
+    TryStmt,
+    RaiseStmt,
+]
 
 
 @dataclass
@@ -1989,8 +1989,35 @@ class PebbleInterpreter:
         )
         child.module_cache = self.module_cache
         child.module_loading = self.module_loading
-        child.execute(source, initial_globals=self.globals)
-        return ModuleObject(name, {}, child.globals, child.functions)
+        initial_globals = self._module_initial_globals()
+        child.execute(source, initial_globals=initial_globals)
+        exported_values: dict[str, Value] = {}
+        for key, value in initial_globals.items():
+            exported_values[key] = child._clone_value(value)
+        for key, value in child.globals.items():
+            if key not in initial_globals or initial_globals[key] != value:
+                exported_values[key] = value
+        return ModuleObject(name, {}, exported_values, child.functions)
+
+    def _module_initial_globals(self) -> dict[str, Value]:
+        module_names = {
+            "ARGC",
+            "ARGV",
+            "CWD",
+            "ENV",
+            "FILE_CONTENT",
+            "FS_MODE",
+            "PATH",
+            "SYSTEM_RUNTIME_PATH",
+            "SYSTEM_SHELL_PATH",
+            "SYSTEM_SHELL_SOURCE",
+            "TARGET_FILE",
+        }
+        initial_globals: dict[str, Value] = {}
+        for name in module_names:
+            if name in self.globals:
+                initial_globals[name] = self._clone_value(self.globals[name])
+        return initial_globals
 
     def _get_module_member(self, target: Value, attr: str, line_number: int) -> Value:
         if not isinstance(target, ModuleObject):
@@ -2792,7 +2819,7 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
                 stack.append(self._read_variable(instr[1], instr[2], local_env))
             elif op == "UNARY":
                 value = stack.pop()
-                if instr[1] == "-" and type(value) is int:
+                if instr[1] == "-" and type(value) in {int, float}:
                     stack.append(-value)
                 elif instr[1] == "not":
                     stack.append(not self._truthy(value))
@@ -2935,6 +2962,7 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
             self._require_arity(expr, args, 2)
             path = self._resolve_file_arg(args[0], line_number)
             text = self._coerce_to_text(args[1], line_number)
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
             return text
         if name == "str":

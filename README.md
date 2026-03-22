@@ -39,6 +39,8 @@ For the full syntax, builtins, modules, examples, and execution model, see
 
 ## Run the shell
 
+PebbleOS currently supports Python 3.9+.
+
 ```bash
 python3 main.py
 ```
@@ -54,6 +56,24 @@ python3 main.py --fs-mode vfs-persistent
 ```
 
 The default is `hostfs`.
+
+Safer boot defaults:
+
+- mounted `system/...` files are read-only by default
+- HTTPS certificate failures now fail closed by default
+- `boot()` failures exit with a non-zero status instead of dropping into a half-booted shell
+
+Use these flags only when you explicitly want the less-safe behavior:
+
+```bash
+python3 main.py --allow-system-writes
+python3 main.py --insecure-tls
+```
+
+Equivalent environment variables:
+
+- `PEBBLE_ALLOW_SYSTEM_WRITES=1`
+- `PEBBLE_INSECURE_TLS=1`
 
 Filesystem modes:
 
@@ -150,11 +170,15 @@ python3 -m unittest discover -s tests
 ```
 
 Default discovery now runs the fast suite and skips the slower shell/TTY
-integration coverage. To include the full shell runtime regression set, run:
+integration coverage. The fast suite passes on this repo under Python 3.9.6.
+To include the full shell runtime regression set, run:
 
 ```bash
 PEBBLE_RUN_SLOW_TESTS=1 python3 -m unittest discover -s tests
 ```
+
+The slow suite still provides meaningful foreground/TTY coverage and should be
+run before releases that touch shell, process, or terminal behavior.
 
 ## Evolution
 

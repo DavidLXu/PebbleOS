@@ -48,11 +48,7 @@ def color_enabled():
     return 0
 
 def colorize_name(name, is_dir):
-    if color_enabled() == 0:
-        return name
-    if is_dir:
-        return "\u001b[01;34m" + name + "\u001b[00m"
-    return "\u001b[00;90m" + name + "\u001b[00m"
+    return name
 
 def current_entry_names_from(names):
     entries = []
@@ -74,7 +70,10 @@ def entry_time(name):
 
 def safe_file_size(name):
     try:
-        return len(read_file(name))
+        fd = sys_fd_open(name, "r")
+        info = sys_fd_stat(fd)
+        sys_fd_close(fd)
+        return info["size"]
     except:
         return 0
 
