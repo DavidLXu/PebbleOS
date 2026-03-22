@@ -1,0 +1,15 @@
+Pebble parser diagnostics demo files
+
+Run these inside Pebble OS:
+
+run parser_error_expr.peb
+run parser_error_target.peb
+run parser_error_bracket.peb
+run parser_error_indent.peb
+
+Expected kinds of errors:
+
+- invalid expression with column caret
+- invalid assignment target with column caret
+- unterminated bracket with opening location
+- unexpected indentation with expected vs actual levels

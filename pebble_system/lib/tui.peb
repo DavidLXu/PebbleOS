@@ -1,0 +1,360 @@
+import system.kernel.term
+
+def term_clear():
+    return system.kernel.term.clear_screen()
+
+def term_move(row, col):
+    return system.kernel.term.move_cursor(row, col)
+
+def term_draw(text):
+    return system.kernel.term.write_text(text)
+
+def term_hide_cursor():
+    return system.kernel.term.hide_cursor()
+
+def term_show_cursor():
+    return system.kernel.term.show_cursor()
+
+def term_flush():
+    return system.kernel.term.flush_output()
+
+def term_read_key_timeout(timeout_ms):
+    return system.kernel.term.read_key_timeout(timeout_ms)
+
+def term_tty_state():
+    return system.kernel.term.tty_state()
+
+def repeat_text(text, count):
+    out = ""
+    i = 0
+    while i < count:
+        out = out + text
+        i = i + 1
+    return out
+
+def slice_text(text, start, count):
+    if start < 0:
+        start = 0
+    if count <= 0:
+        return ""
+    out = ""
+    i = start
+    end = start + count
+    while i < len(text) and i < end:
+        out = out + text[i]
+        i = i + 1
+    return out
+
+def pad_right(text, width):
+    if width <= 0:
+        return ""
+    if len(text) >= width:
+        return slice_text(text, 0, width)
+    return text + repeat_text(" ", width - len(text))
+
+def center_text(text, width):
+    if width <= 0:
+        return ""
+    if len(text) >= width:
+        return slice_text(text, 0, width)
+    padding = int((width - len(text)) / 2)
+    return pad_right(repeat_text(" ", padding) + text, width)
+
+def split_by(text, delimiter):
+    parts = []
+    current = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == delimiter:
+            append(parts, current)
+            current = ""
+        else:
+            current = current + ch
+        i = i + 1
+    append(parts, current)
+    return parts
+
+def parse_words(text):
+    words = []
+    current = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == " " or ch == "\t":
+            if len(current) > 0:
+                append(words, current)
+                current = ""
+        else:
+            current = current + ch
+        i = i + 1
+    if len(current) > 0:
+        append(words, current)
+    return words
+
+def split_lines_local(text):
+    lines = []
+    current = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\n":
+            append(lines, current)
+            current = ""
+        else:
+            current = current + ch
+        i = i + 1
+    if len(text) == 0:
+        return []
+    append(lines, current)
+    return lines
+
+def join_lines_local(lines):
+    out = ""
+    i = 0
+    while i < len(lines):
+        if i > 0:
+            out = out + "\n"
+        out = out + lines[i]
+        i = i + 1
+    return out
+
+def encode_text(text):
+    out = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            out = out + "\\\\"
+        elif ch == "\n":
+            out = out + "\\n"
+        elif ch == "|":
+            out = out + "\\p"
+        else:
+            out = out + ch
+        i = i + 1
+    return out
+
+def decode_text(text):
+    out = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt == "n":
+                out = out + "\n"
+            elif nxt == "p":
+                out = out + "|"
+            elif nxt == "\\":
+                out = out + "\\"
+            else:
+                out = out + nxt
+            i = i + 2
+        else:
+            out = out + ch
+            i = i + 1
+    return out
+
+def read_kv_file(path):
+    data = {}
+    if file_exists(path) == 0:
+        return data
+    lines = split_lines_local(read_file(path))
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        sep = -1
+        j = 0
+        while j < len(line):
+            if line[j] == "|":
+                sep = j
+                j = len(line)
+            else:
+                j = j + 1
+        if sep >= 0:
+            key = slice_text(line, 0, sep)
+            value = slice_text(line, sep + 1, len(line) - sep - 1)
+            data[key] = decode_text(value)
+        i = i + 1
+    return data
+
+def write_kv_file(path, data):
+    names = keys(data)
+    lines = []
+    i = 0
+    while i < len(names):
+        key = names[i]
+        append(lines, key + "|" + encode_text(str(data[key])))
+        i = i + 1
+    write_file(path, join_lines_local(lines))
+    return 0
+
+def key_exists(data, target):
+    names = keys(data)
+    i = 0
+    while i < len(names):
+        if names[i] == target:
+            return 1
+        i = i + 1
+    return 0
+
+def wrap_text(text, width):
+    if width <= 1:
+        return [slice_text(text, 0, 1)]
+    words = parse_words(text)
+    if len(words) == 0:
+        return [""]
+    lines = []
+    current = ""
+    i = 0
+    while i < len(words):
+        word = words[i]
+        trial = word
+        if len(current) > 0:
+            trial = current + " " + word
+        if len(trial) <= width:
+            current = trial
+        else:
+            if len(current) > 0:
+                append(lines, current)
+                current = ""
+            if len(word) <= width:
+                current = word
+            else:
+                start = 0
+                while start < len(word):
+                    append(lines, slice_text(word, start, width))
+                    start = start + width
+                current = ""
+        i = i + 1
+    if len(current) > 0:
+        append(lines, current)
+    return lines
+
+def draw_text_at(row, col, text):
+    term_move(row, col)
+    term_draw(text)
+    return 0
+
+def draw_text_padded(row, col, text, width):
+    term_move(row, col)
+    term_draw(pad_right(text, width))
+    return 0
+
+def draw_centered(row, width, text):
+    term_move(row, 1)
+    term_draw(center_text(text, width))
+    return 0
+
+def draw_hline(row, col, width, glyph):
+    term_move(row, col)
+    term_draw(repeat_text(glyph, width))
+    return 0
+
+def draw_blank_rows(width, start_row, end_row):
+    blank = repeat_text(" ", width)
+    row = start_row
+    while row <= end_row:
+        term_move(row, 1)
+        term_draw(blank)
+        row = row + 1
+    return 0
+
+def draw_box(row, col, width, height):
+    if width < 2 or height < 2:
+        return 0
+    inner = width - 2
+    draw_text_at(row, col, "+" + repeat_text("-", inner) + "+")
+    y = row + 1
+    while y < row + height - 1:
+        draw_text_at(y, col, "|" + repeat_text(" ", inner) + "|")
+        y = y + 1
+    draw_text_at(row + height - 1, col, "+" + repeat_text("-", inner) + "+")
+    return 0
+
+def draw_title(width, title):
+    draw_text_padded(1, 1, title, width)
+    if width > 0:
+        marker = "-"
+        draw_hline(2, 1, width, marker)
+    return 0
+
+def draw_footer(row, width, left_text, right_text):
+    line = left_text
+    gap = width - len(left_text) - len(right_text)
+    if gap < 1:
+        line = pad_right(left_text + " " + right_text, width)
+    else:
+        line = left_text + repeat_text(" ", gap) + right_text
+    draw_text_padded(row, 1, line, width)
+    return 0
+
+def event_keep(state):
+    return {"running": 1, "state": state}
+
+def event_quit(state):
+    return {"running": 0, "state": state}
+
+def normalize_event(event, state):
+    if key_exists(event, "state"):
+        state = event["state"]
+    if key_exists(event, "running"):
+        return {"running": event["running"], "state": state}
+    return {"running": 1, "state": state}
+
+def quit_key(key):
+    return key == "q" or key == "Q" or key == "ESC"
+
+def run_app(title, footer, tick_ms, min_width, min_height, too_small_text, max_frames, state, render_fn, key_fn, tick_fn):
+    tty = term_tty_state()
+    interactive = tty["interactive"]
+    term_hide_cursor()
+    running = 1
+    frames = 0
+    last_small = 0
+    while running:
+        tty = term_tty_state()
+        width = tty["cols"]
+        height = tty["rows"]
+        if width < min_width or height < min_height:
+            if last_small == 0:
+                term_clear()
+                term_move(1, 1)
+                term_draw(too_small_text)
+                term_flush()
+                last_small = 1
+            if interactive:
+                key = term_read_key_timeout(tick_ms)
+                if quit_key(key):
+                    running = 0
+            else:
+                running = 0
+        else:
+            last_small = 0
+            term_clear()
+            render_fn(state, width, height, title, footer)
+            term_flush()
+            frames = frames + 1
+            if max_frames > 0 and frames >= max_frames:
+                running = 0
+            elif interactive:
+                key = term_read_key_timeout(tick_ms)
+                if quit_key(key):
+                    running = 0
+                elif key != "":
+                    event = normalize_event(key_fn(state, key, width, height), state)
+                    state = event["state"]
+                    running = event["running"]
+                if running:
+                    event = normalize_event(tick_fn(state, width, height), state)
+                    state = event["state"]
+                    running = event["running"]
+            else:
+                event = normalize_event(tick_fn(state, width, height), state)
+                state = event["state"]
+                running = event["running"]
+    term_clear()
+    term_move(1, 1)
+    term_show_cursor()
+    return state

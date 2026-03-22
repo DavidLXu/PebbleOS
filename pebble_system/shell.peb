@@ -71,7 +71,7 @@ def command_help(args):
         print "                  kill, top, htop, ps, sh, bash, tty, tree, clear, clock, balls, starfield"
         print "                  tunnel, snake, rainfire, matrix, train, welcome"
         print "                  test, expr, dirname, basename, true, false, yes"
-        print "                  date, hostname, uname, version, sleep, du, physics"
+        print "                  date, hostname, uname, version, sleep, du, physics, ui_demo"
         print "                  ping, fetch, curl, wget, chat"
         print "                  from PATH: " + current_path()
         print "  cmd &           run external commands and Pebble programs in background"
@@ -147,6 +147,9 @@ def command_help(args):
     elif topic == "physics":
         print "physics"
         print "start the interactive 2D text physics simulator"
+    elif topic == "ui_demo":
+        print "ui_demo [--once] [--reset]"
+        print "run the reference Pebble TUI app built on system.lib.tui"
     elif topic == "clock":
         print "clock"
         print "show an interactive analog clock with a live second hand"

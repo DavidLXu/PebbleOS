@@ -1,14 +1,7 @@
 import math
+import system.lib.tui
 
 X_SCALE = 2
-
-def repeat_text(text, count):
-    out = ""
-    i = 0
-    while i < count:
-        out = out + text
-        i = i + 1
-    return out
 
 def parse_two_digits(text_value, index):
     return int(text_value[index] + text_value[index + 1])
@@ -17,15 +10,6 @@ def min_value(a, b):
     if a < b:
         return a
     return b
-
-def draw_blank_rows(width, height):
-    blank = repeat_text(" ", width)
-    row = 2
-    while row <= height:
-        move_cursor(row, 1)
-        draw_text(blank)
-        row = row + 1
-    return 0
 
 def point_x(center_x, radius, angle):
     return center_x + int((float(radius * X_SCALE) * float(math.cos(angle))) / 10000.0)
@@ -68,16 +52,14 @@ def draw_circle_markers(center_x, center_y, radius):
         x = point_x(center_x, radius, angle)
         if len(label) == 2:
             x = x - 1
-        move_cursor(point_y(center_y, radius, angle), x)
-        draw_text(label)
+        system.lib.tui.draw_text_at(point_y(center_y, radius, angle), x, label)
         i = i + 1
     return 0
 
 def draw_hand(center_x, center_y, radius, angle, glyph):
     step = 1
     while step <= radius:
-        move_cursor(point_y(center_y, step, angle), point_x(center_x, step, angle))
-        draw_text(glyph)
+        system.lib.tui.draw_text_at(point_y(center_y, step, angle), point_x(center_x, step, angle), glyph)
         step = step + 1
     return 0
 
@@ -85,63 +67,37 @@ def draw_clock_frame(width, height, now_text):
     hours = parse_two_digits(now_text, 12)
     minutes = parse_two_digits(now_text, 15)
     seconds = parse_two_digits(now_text, 18)
-
     radius = min_value(int((width - 8) / (X_SCALE * 2)), int((height - 6) / 2))
     center_x = int(width / 2)
     center_y = int((height + 3) / 2)
     hour_value = int_mod(hours, 12)
-
     hour_angle = 90 - hour_value * 30 - int(minutes / 2)
     minute_angle = 90 - minutes * 6 - int(seconds / 10)
     second_angle = 90 - seconds * 6
-
-    clear_screen()
-    draw_blank_rows(width, height)
-    move_cursor(1, 1)
-    draw_text("Pebble analog clock  q quit  " + now_text)
+    system.lib.tui.draw_blank_rows(width, 2, height)
+    system.lib.tui.draw_text_at(1, 1, "Pebble analog clock  q quit  " + now_text)
     draw_circle_markers(center_x, center_y, radius)
     draw_hand(center_x, center_y, int(radius * 0.55), hour_angle, "H")
     draw_hand(center_x, center_y, int(radius * 0.80), minute_angle, "M")
     draw_hand(center_x, center_y, radius - 1, second_angle, ".")
-    move_cursor(center_y, center_x)
-    draw_text("*")
-    flush_screen()
+    system.lib.tui.draw_text_at(center_y, center_x, "*")
     return 0
 
-tty = tty_state()
-interactive = tty["interactive"]
-hide_cursor()
+def render_app(state, width, height, title, footer):
+    draw_clock_frame(width, height, current_time())
+    return 0
 
-running = 1
-last_small = 0
+def key_app(state, key, width, height):
+    next_state = {"ticks": state["ticks"]}
+    return system.lib.tui.event_keep(next_state)
 
-while running:
-    tty = tty_state()
-    width = tty["cols"]
-    height = tty["rows"]
-    if width < 28 or height < 14:
-        if last_small == 0:
-            clear_screen()
-            move_cursor(1, 1)
-            draw_text("terminal too small for analog clock")
-            flush_screen()
-            last_small = 1
-        if interactive:
-            key = read_key_timeout(200)
-            if key == "q" or key == "Q" or key == "ESC":
-                running = 0
-        else:
-            running = 0
-    else:
-        last_small = 0
-        draw_clock_frame(width, height, current_time())
-        if interactive:
-            key = read_key_timeout(1000)
-            if key == "q" or key == "Q" or key == "ESC":
-                running = 0
-        else:
-            running = 0
+def tick_app(state, width, height):
+    next_state = {"ticks": state["ticks"] + 1}
+    return system.lib.tui.event_keep(next_state)
 
-clear_screen()
-move_cursor(1, 1)
-show_cursor()
+state = {"ticks": 0}
+max_frames = 0
+tty = system.kernel.term.tty_state()
+if tty["interactive"] == 0:
+    max_frames = 1
+system.lib.tui.run_app("clock", "", 1000, 28, 14, "terminal too small for analog clock", max_frames, state, render_app, key_app, tick_app)

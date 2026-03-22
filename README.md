@@ -15,6 +15,7 @@ Detailed architecture notes:
 - filesystem: [FILESYSTEM.md](FILESYSTEM.md)
 - memory/runtime: [MEMORY.md](MEMORY.md)
 - language: [LANG.md](LANG.md)
+- Pebble language spec: [docs/PEBBLE_SPEC.md](docs/PEBBLE_SPEC.md)
 - ABI: [docs/ABI.md](docs/ABI.md)
 - process model: [docs/PROCESS.md](docs/PROCESS.md)
 - launcher semantics: [docs/LAUNCHER.md](docs/LAUNCHER.md)
@@ -236,6 +237,8 @@ That preparation phase added:
 - added a Pebble-native `welcome` guided tour that greets new users and walks them through navigation, editing, games, processes, and networking step by step
 - promoted the train pass animation into a first-class `train` system command, so users can launch it directly without `run system/train_pass.peb`
 - improved the Pebble parser so bracketed expressions in `()`, `[]`, and `{}` can span multiple lines, which removes a common source of bootstrap-language friction when writing larger system commands
+- improved Pebble parser diagnostics so expression and assignment-target syntax errors now report the failing column with inline source context instead of only generic `invalid expression` messages
+- improved Pebble bracket and indentation diagnostics so unmatched or unterminated brackets now report exact open/close locations, and indentation errors now show expected vs actual indent levels
 - added an interactive Pebble `physics` sandbox command with 2D text rendering, configurable gravity/air drag, object collisions, and region materials (`air`, `liquid`, `solid`)
 - fixed `physics` state loss in interactive terminal re-entry paths by persisting world/object state between input cycles, so sequential commands keep previously added objects and filled materials
 - added a first Pebble-visible networking layer with `system.lib.net` plus `ping` (TCP probe) and `fetch` (HTTP GET) userland commands, keeping Python as the host socket substrate rather than exposing raw sockets directly
@@ -244,6 +247,8 @@ That preparation phase added:
 - improved the analog `clock` dial rendering so all twelve hour positions now display numeric labels instead of placeholder `o` markers for non-cardinal hours
 - `ls` now also shows human-readable sizes for both files and directories by default, alongside each entry's timestamp and name
 - added a Pebble-native `clock` command that renders a live analog terminal clock with hour, minute, and second hands using the Pebble-visible TTY drawing primitives
+- added a reusable Pebble `system.lib.tui` framework for terminal apps, covering shared redraw loops, title/footer chrome, text layout, key-driven callbacks, and lightweight key-value state persistence, with `ui_demo` as the reference app
+- migrated the Pebble analog `clock` command onto `system.lib.tui`, making it the first real system app to use the shared terminal app framework rather than a one-off redraw loop
 
 This is the current transition point: PebbleOS is no longer just a bootstrap
 demo, but it is not yet a full modern system either. It now has enough

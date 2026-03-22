@@ -5,6 +5,9 @@
 `Pebble` is a small scripting language used by Pebble OS. It is line-based and
 uses Python-style blocks with exactly four spaces per indentation level.
 
+For the current implementation contract and parity goals between interpreter and
+bytecode execution, see [docs/PEBBLE_SPEC.md](docs/PEBBLE_SPEC.md).
+
 Pebble programs can run in two execution modes:
 
 - `run FILE [ARGS...]`: interpreter mode

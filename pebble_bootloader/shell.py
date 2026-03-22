@@ -4,6 +4,7 @@ import cmd
 import json
 import os
 import queue
+import re
 import select
 import shutil
 import shlex
@@ -81,6 +82,8 @@ class VMTask:
     pending_tty_bytes: list[str] = field(default_factory=list)
     pending_escape_started_at: float | None = None
     blocked_mutex_id: int | None = None
+    source_label: str = ""
+    runtime_line_count: int = 0
 
 
 @dataclass
@@ -1137,7 +1140,7 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: run_program() expects a list of string arguments")
         try:
             self._run_program(args[0], argv, exec_mode="interp")
-        except (FileSystemError, PebbleError) as exc:
+        except FileSystemError as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
         return 0
 
@@ -1151,7 +1154,7 @@ class PebbleShell(cmd.Cmd):
             raise PebbleError(f"line {line_number}: exec_program() expects a list of string arguments")
         try:
             self._run_program(args[0], argv, exec_mode="bytecode")
-        except (FileSystemError, PebbleError) as exc:
+        except FileSystemError as exc:
             raise PebbleError(f"line {line_number}: {exc}") from exc
         return 0
 
@@ -1686,7 +1689,7 @@ class PebbleShell(cmd.Cmd):
             return 0
         except PebbleError as exc:
             task.status = "error"
-            task.error = str(exc)
+            task.error = self._remap_program_error(str(exc), task.source_label, task.runtime_line_count)
             return 0
 
     def _host_vm_task_status(self, args: list[object], line_number: int) -> str:
@@ -2581,6 +2584,7 @@ class PebbleShell(cmd.Cmd):
         program = self._normalize_user_path(name, cwd_value)
         runtime_source = self.fs.read_file("system/runtime.peb")
         source = runtime_source + "\n" + self.fs.read_file(program.lstrip("/"))
+        runtime_line_count = runtime_source.count("\n") + 1
         runtime = self._make_runtime(consume_output=False)
         task_ref: dict[str, VMTask | None] = {"task": None}
         host_functions = dict(runtime.host_functions)
@@ -2615,7 +2619,12 @@ class PebbleShell(cmd.Cmd):
                 file_content = ""
             initial_globals["TARGET_FILE"] = target_file
             initial_globals["FILE_CONTENT"] = file_content
-        interpreter.prepare(source, initial_globals=initial_globals)
+        try:
+            interpreter.prepare(source, initial_globals=initial_globals)
+        except (FileSystemError, PebbleError) as exc:
+            raise PebbleError(
+                self._remap_program_error(str(exc), program.lstrip("/"), runtime_line_count)
+            ) from exc
         task = VMTask(
             task_id=0,
             command=command_name + " " + program,
@@ -2626,6 +2635,8 @@ class PebbleShell(cmd.Cmd):
             ppid=1,
             pgid=0,
             sid=1,
+            source_label=program.lstrip("/"),
+            runtime_line_count=runtime_line_count,
         )
         task_ref["task"] = task
         with self._vm_lock:
@@ -2660,7 +2671,7 @@ class PebbleShell(cmd.Cmd):
                     task.blocked_mutex_id = exc.mutex_id
                 except PebbleError as exc:
                     task.status = "error"
-                    task.error = str(exc)
+                    task.error = self._remap_program_error(str(exc), task.source_label, task.runtime_line_count)
                     self._notify_sigchld_for_task(task)
 
     def _attach_foreground_vm_task(self, task_id: int) -> bool:
@@ -2742,7 +2753,7 @@ class PebbleShell(cmd.Cmd):
                     task.blocked_mutex_id = exc.mutex_id
                 except PebbleError as exc:
                     task.status = "error"
-                    task.error = str(exc)
+                    task.error = self._remap_program_error(str(exc), task.source_label, task.runtime_line_count)
                     self._notify_sigchld_for_task(task)
             self._emit_new_vm_output(task)
             if task.status in {"halted", "error"}:
@@ -2837,6 +2848,7 @@ class PebbleShell(cmd.Cmd):
         source_name = name.lstrip("/")
         runtime_source = self.fs.read_file("system/runtime.peb")
         source = runtime_source + "\n" + self.fs.read_file(source_name)
+        runtime_line_count = runtime_source.count("\n") + 1
         initial_globals = {
             "ARGV": extra_args,
             "ARGC": len(extra_args),
@@ -2879,8 +2891,47 @@ class PebbleShell(cmd.Cmd):
         except KeyboardInterrupt:
             return interactive_program, [], "__interrupt__"
         except (FileSystemError, PebbleError) as exc:
-            return interactive_program, [], str(exc)
+            return (
+                interactive_program,
+                [],
+                self._remap_program_error(str(exc), source_name, runtime_line_count),
+            )
         return interactive_program, output, None
+
+    def _remap_program_error(self, error: str, source_label: str, runtime_line_count: int) -> str:
+        if source_label == "" or runtime_line_count < 1:
+            return error
+        first_newline = error.find("\n")
+        if first_newline >= 0:
+            first_line = error[:first_newline]
+            remainder = error[first_newline:]
+        else:
+            first_line = error
+            remainder = ""
+        if first_line.startswith("line ") == 0:
+            return error
+        colon = first_line.find(":")
+        if colon < 6:
+            return error
+        number_text = first_line[5:colon].strip()
+        if number_text == "" or number_text.isdigit() == 0:
+            return error
+        line_number = int(number_text)
+        detail = self._remap_embedded_line_refs(first_line[colon + 1 :].strip(), runtime_line_count)
+        remainder = self._remap_embedded_line_refs(remainder, runtime_line_count)
+        if line_number > runtime_line_count:
+            mapped_line = line_number - runtime_line_count
+            return source_label + ":" + str(mapped_line) + ": " + detail + remainder
+        return "system/runtime.peb:" + str(line_number) + ": " + detail + remainder
+
+    def _remap_embedded_line_refs(self, text: str, runtime_line_count: int) -> str:
+        def replace(match: re.Match[str]) -> str:
+            line_number = int(match.group(1))
+            if line_number > runtime_line_count:
+                return "line " + str(line_number - runtime_line_count)
+            return "line " + str(line_number)
+
+        return re.sub(r"line (\d+)(?= column)", replace, text)
 
     def _start_background_job(
         self,

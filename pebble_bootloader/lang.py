@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +41,28 @@ class SourceLine:
     number: int
     indent: int
     text: str
+
+
+@dataclass
+class BracketEntry:
+    char: str
+    line_number: int
+    column: int
+
+
+@dataclass
+class ParseToken:
+    kind: str
+    text: str
+    value: object
+    column: int
+
+
+class ExpressionParseError(Exception):
+    def __init__(self, column: int, detail: str) -> None:
+        super().__init__(detail)
+        self.column = column
+        self.detail = detail
 
 
 @dataclass
@@ -167,6 +188,8 @@ class ModuleObject:
 class FunctionValue:
     name: str
     function: object
+    scope_values: dict[str, "Value"] | None = None
+    scope_functions: dict[str, object] | None = None
 
 
 @dataclass
@@ -427,7 +450,7 @@ class Parser:
         current_number: int | None = None
         current_indent: int | None = None
         current_parts: list[str] = []
-        bracket_depth = 0
+        bracket_stack: list[BracketEntry] = []
 
         for number, raw_line in enumerate(source.splitlines(), start=1):
             if "\t" in raw_line:
@@ -450,11 +473,9 @@ class Parser:
             else:
                 current_parts.append(text.strip())
 
-            bracket_depth += self._bracket_delta(text, number)
-            if bracket_depth < 0:
-                raise PebbleError(f"line {number}: unmatched closing bracket")
+            self._scan_brackets(text, number, bracket_stack)
 
-            if bracket_depth == 0:
+            if len(bracket_stack) == 0:
                 prepared.append(
                     SourceLine(
                         number=current_number,
@@ -467,7 +488,11 @@ class Parser:
                 current_parts = []
 
         if current_number is not None:
-            raise PebbleError(f"line {current_number}: unterminated bracketed expression")
+            opener = bracket_stack[-1]
+            raise PebbleError(
+                f"line {current_number}: unterminated bracketed expression; "
+                f"'{opener.char}' opened at line {opener.line_number} column {opener.column}"
+            )
         return prepared
 
     def _strip_comment(self, raw_line: str) -> str:
@@ -496,8 +521,7 @@ class Parser:
             i = i + 1
         return out.rstrip()
 
-    def _bracket_delta(self, text: str, line_number: int) -> int:
-        depth = 0
+    def _scan_brackets(self, text: str, line_number: int, bracket_stack: list[BracketEntry]) -> None:
         in_string = 0
         quote = ""
         i = 0
@@ -518,11 +542,29 @@ class Parser:
                 i = i + 1
                 continue
             if ch == "(" or ch == "[" or ch == "{":
-                depth = depth + 1
+                bracket_stack.append(BracketEntry(char=ch, line_number=line_number, column=i + 1))
             elif ch == ")" or ch == "]" or ch == "}":
-                depth = depth - 1
+                expected = self._opening_bracket(ch)
+                if len(bracket_stack) == 0:
+                    raise PebbleError(
+                        f"line {line_number}: unmatched closing bracket '{ch}' at column {i + 1}"
+                    )
+                opener = bracket_stack[-1]
+                if opener.char != expected:
+                    raise PebbleError(
+                        f"line {line_number}: closing bracket '{ch}' at column {i + 1} "
+                        f"does not match '{opener.char}' opened at line {opener.line_number} "
+                        f"column {opener.column}"
+                    )
+                bracket_stack.pop()
             i = i + 1
-        return depth
+
+    def _opening_bracket(self, closing: str) -> str:
+        if closing == ")":
+            return "("
+        if closing == "]":
+            return "["
+        return "{"
 
     def _parse_block(self, expected_indent: int) -> list[Stmt]:
         statements: list[Stmt] = []
@@ -531,7 +573,10 @@ class Parser:
             if line.indent < expected_indent:
                 break
             if line.indent > expected_indent:
-                raise PebbleError(f"line {line.number}: unexpected indentation")
+                raise PebbleError(
+                    f"line {line.number}: unexpected indentation; "
+                    f"expected level {expected_indent}, got level {line.indent}"
+                )
             statements.append(self._parse_statement(line))
         return statements
 
@@ -685,28 +730,22 @@ class Parser:
         return None
 
     def _parse_target(self, text: str, line_number: int) -> Target:
-        try:
-            parsed = ast.parse(text, mode="eval")
-        except SyntaxError as exc:
-            raise PebbleError(f"line {line_number}: invalid assignment target") from exc
-        return self._convert_target_node(parsed.body, line_number)
-
-    def _convert_target_node(self, node: ast.AST, line_number: int) -> Target:
-        if isinstance(node, ast.Name):
-            return NameTarget(name=node.id, line_number=line_number)
-        if isinstance(node, ast.Subscript):
-            return IndexTarget(
-                value=self._convert_expr_node(node.value, line_number),
-                index=self._convert_slice_node(node.slice, line_number),
-                line_number=line_number,
+        expr = self._parse_with_prefix(text.strip(), line_number, "invalid assignment target")
+        if isinstance(expr, NameExpr):
+            return NameTarget(name=expr.name, line_number=line_number)
+        if isinstance(expr, IndexExpr):
+            return IndexTarget(value=expr.value, index=expr.index, line_number=line_number)
+        if isinstance(expr, AttrExpr):
+            return AttrTarget(value=expr.value, attr=expr.attr, line_number=line_number)
+        raise PebbleError(
+            self._format_parse_error(
+                line_number,
+                "invalid assignment target",
+                text.strip(),
+                1,
+                "expected a name, attribute, or index target",
             )
-        if isinstance(node, ast.Attribute):
-            return AttrTarget(
-                value=self._convert_expr_node(node.value, line_number),
-                attr=node.attr,
-                line_number=line_number,
-            )
-        raise PebbleError(f"line {line_number}: invalid assignment target")
+        )
 
     def _parse_if_statement(self, line: SourceLine) -> IfStmt:
         branches: list[IfBranch] = []
@@ -766,171 +805,413 @@ class Parser:
             raise PebbleError(f"line {parent_line.number}: expected an indented block")
         if next_line.indent != expected_indent:
             raise PebbleError(
-                f"line {next_line.number}: indentation must increase by exactly four spaces"
+                f"line {next_line.number}: indentation must increase by exactly four spaces; "
+                f"expected level {expected_indent}, got level {next_line.indent}"
             )
         return self._parse_block(expected_indent)
 
     def _parse_expression(self, expr_text: str, line_number: int) -> Expr:
-        try:
-            parsed = ast.parse(expr_text.strip(), mode="eval")
-        except SyntaxError as exc:
-            raise PebbleError(f"line {line_number}: invalid expression") from exc
-        return self._convert_expr_node(parsed.body, line_number)
+        text = expr_text.strip()
+        return self._parse_with_prefix(text, line_number, "invalid expression")
 
-    def _convert_expr_node(self, node: ast.AST, line_number: int) -> Expr:
-        if isinstance(node, ast.Constant):
-            if isinstance(node.value, bool):
-                return BoolExpr(value=node.value, line_number=line_number)
-            if node.value is None:
-                return NoneExpr(line_number=line_number)
-            if isinstance(node.value, int):
-                return NumberExpr(value=node.value, line_number=line_number)
-            if isinstance(node.value, float):
-                return NumberExpr(value=node.value, line_number=line_number)
-            if isinstance(node.value, str):
-                return StringExpr(value=node.value, line_number=line_number)
-            raise PebbleError(f"line {line_number}: unsupported constant")
-
-        if isinstance(node, ast.Name):
-            return NameExpr(name=node.id, line_number=line_number)
-
-        if isinstance(node, ast.UnaryOp):
-            if isinstance(node.op, ast.USub):
-                return UnaryExpr(
-                    op="-",
-                    operand=self._convert_expr_node(node.operand, line_number),
-                    line_number=line_number,
+    def _parse_with_prefix(self, text: str, line_number: int, prefix: str) -> Expr:
+        self._expr_text = text
+        self._expr_line_number = line_number
+        self._expr_prefix = prefix
+        self._expr_tokens = self._tokenize_expression(text, line_number, prefix)
+        self._expr_index = 0
+        expr = self._parse_or_expr()
+        token = self._peek_token()
+        if token.kind != "EOF":
+            raise PebbleError(
+                self._format_parse_error(
+                    line_number,
+                    prefix,
+                    text,
+                    token.column,
+                    f"unexpected token '{token.text}'",
                 )
-            if isinstance(node.op, ast.Not):
-                return UnaryExpr(
-                    op="not",
-                    operand=self._convert_expr_node(node.operand, line_number),
-                    line_number=line_number,
-                )
-
-        if isinstance(node, ast.BinOp):
-            op = self._convert_binary_op(node.op, line_number)
-            return BinaryExpr(
-                left=self._convert_expr_node(node.left, line_number),
-                op=op,
-                right=self._convert_expr_node(node.right, line_number),
-                line_number=line_number,
             )
+        return expr
 
-        if isinstance(node, ast.BoolOp):
-            if len(node.values) < 2:
-                raise PebbleError(f"line {line_number}: invalid boolean expression")
-            expr = self._convert_expr_node(node.values[0], line_number)
-            op = self._convert_bool_op(node.op, line_number)
-            i = 1
-            while i < len(node.values):
-                expr = BoolOpExpr(
-                    left=expr,
-                    op=op,
-                    right=self._convert_expr_node(node.values[i], line_number),
-                    line_number=line_number,
-                )
+    def _format_parse_error(
+        self,
+        line_number: int,
+        prefix: str,
+        text: str,
+        column: int,
+        detail: str,
+    ) -> str:
+        if column < 1:
+            column = 1
+        snippet = text
+        if not snippet:
+            return f"line {line_number}: {prefix} at column {column}: {detail}"
+        caret = " " * (column - 1) + "^"
+        return (
+            f"line {line_number}: {prefix} at column {column}: {detail}\n"
+            f"{snippet}\n"
+            f"{caret}"
+        )
+
+    def _tokenize_expression(self, text: str, line_number: int, prefix: str) -> list[ParseToken]:
+        tokens: list[ParseToken] = []
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            column = i + 1
+            if ch == " ":
                 i = i + 1
-            return expr
-
-        if isinstance(node, ast.Compare):
-            if len(node.ops) != 1 or len(node.comparators) != 1:
-                raise PebbleError(f"line {line_number}: chained comparisons are not supported")
-            return BinaryExpr(
-                left=self._convert_expr_node(node.left, line_number),
-                op=self._convert_compare_op(node.ops[0], line_number),
-                right=self._convert_expr_node(node.comparators[0], line_number),
-                line_number=line_number,
-            )
-
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name):
-                return CallExpr(
-                    name=node.func.id,
-                    args=[self._convert_expr_node(arg, line_number) for arg in node.args],
-                    line_number=line_number,
+                continue
+            if ch.isdigit():
+                start = i
+                while i < len(text) and text[i].isdigit():
+                    i = i + 1
+                is_float = 0
+                if i < len(text) and text[i] == ".":
+                    is_float = 1
+                    i = i + 1
+                    while i < len(text) and text[i].isdigit():
+                        i = i + 1
+                number_text = text[start:i]
+                try:
+                    value = float(number_text) if is_float else int(number_text)
+                except ValueError as exc:
+                    raise PebbleError(
+                        self._format_parse_error(line_number, prefix, text, column, "invalid numeric literal")
+                    ) from exc
+                tokens.append(ParseToken("NUMBER", number_text, value, column))
+                continue
+            if ch == '"' or ch == "'":
+                quote = ch
+                start = i
+                i = i + 1
+                value = ""
+                while i < len(text):
+                    current = text[i]
+                    if current == "\\":
+                        if i + 1 >= len(text):
+                            raise PebbleError(
+                                self._format_parse_error(
+                                    line_number,
+                                    prefix,
+                                    text,
+                                    column,
+                                    "unterminated string literal",
+                                )
+                            )
+                        escaped = text[i + 1]
+                        if escaped == "n":
+                            value = value + "\n"
+                        elif escaped == "t":
+                            value = value + "\t"
+                        else:
+                            value = value + escaped
+                        i = i + 2
+                        continue
+                    if current == quote:
+                        i = i + 1
+                        literal_text = text[start:i]
+                        tokens.append(ParseToken("STRING", literal_text, value, column))
+                        break
+                    value = value + current
+                    i = i + 1
+                else:
+                    raise PebbleError(
+                        self._format_parse_error(
+                            line_number,
+                            prefix,
+                            text,
+                            column,
+                            "unterminated string literal",
+                        )
+                    )
+                continue
+            if ch.isalpha() or ch == "_":
+                start = i
+                i = i + 1
+                while i < len(text) and (text[i].isalnum() or text[i] == "_"):
+                    i = i + 1
+                ident = text[start:i]
+                tokens.append(ParseToken("IDENT", ident, ident, column))
+                continue
+            if i + 1 < len(text):
+                pair = text[i : i + 2]
+                if pair in {"==", "!=", "<=", ">="}:
+                    tokens.append(ParseToken("SYMBOL", pair, pair, column))
+                    i = i + 2
+                    continue
+            if ch in "+-*/()[]{}.,:<>":
+                tokens.append(ParseToken("SYMBOL", ch, ch, column))
+                i = i + 1
+                continue
+            raise PebbleError(
+                self._format_parse_error(
+                    line_number,
+                    prefix,
+                    text,
+                    column,
+                    f"unexpected character '{ch}'",
                 )
-            if isinstance(node.func, ast.Attribute):
-                return AttrCallExpr(
-                    value=self._convert_expr_node(node.func.value, line_number),
-                    attr=node.func.attr,
-                    args=[self._convert_expr_node(arg, line_number) for arg in node.args],
-                    line_number=line_number,
+            )
+        tokens.append(ParseToken("EOF", "", None, len(text) + 1))
+        return tokens
+
+    def _peek_token(self) -> ParseToken:
+        return self._expr_tokens[self._expr_index]
+
+    def _advance_token(self) -> ParseToken:
+        token = self._expr_tokens[self._expr_index]
+        if token.kind != "EOF":
+            self._expr_index = self._expr_index + 1
+        return token
+
+    def _match_token(self, text: str) -> bool:
+        token = self._peek_token()
+        if token.text == text:
+            self._expr_index = self._expr_index + 1
+            return 1
+        return 0
+
+    def _expect_token(self, text: str, detail: str) -> ParseToken:
+        token = self._peek_token()
+        if token.text != text:
+            raise PebbleError(
+                self._format_parse_error(
+                    self._expr_line_number,
+                    self._expr_prefix,
+                    self._expr_text,
+                    token.column,
+                    detail,
                 )
-            raise PebbleError(f"line {line_number}: only simple or module function calls are supported")
-
-        if isinstance(node, ast.Attribute):
-            return AttrExpr(
-                value=self._convert_expr_node(node.value, line_number),
-                attr=node.attr,
-                line_number=line_number,
             )
+        self._expr_index = self._expr_index + 1
+        return token
 
-        if isinstance(node, ast.List):
-            return ListExpr(
-                items=[self._convert_expr_node(item, line_number) for item in node.elts],
-                line_number=line_number,
-            )
+    def _parse_or_expr(self) -> Expr:
+        expr = self._parse_and_expr()
+        while self._peek_token().kind == "IDENT" and self._peek_token().text == "or":
+            token = self._advance_token()
+            expr = BoolOpExpr(expr, "or", self._parse_and_expr(), self._expr_line_number)
+        return expr
 
-        if isinstance(node, ast.Dict):
-            items: list[tuple[Expr, Expr]] = []
-            for key, value in zip(node.keys, node.values):
-                if key is None:
-                    raise PebbleError(f"line {line_number}: dict unpacking is not supported")
-                items.append(
-                    (
-                        self._convert_expr_node(key, line_number),
-                        self._convert_expr_node(value, line_number),
+    def _parse_and_expr(self) -> Expr:
+        expr = self._parse_not_expr()
+        while self._peek_token().kind == "IDENT" and self._peek_token().text == "and":
+            token = self._advance_token()
+            expr = BoolOpExpr(expr, "and", self._parse_not_expr(), self._expr_line_number)
+        return expr
+
+    def _parse_not_expr(self) -> Expr:
+        token = self._peek_token()
+        if token.kind == "IDENT" and token.text == "not":
+            self._advance_token()
+            return UnaryExpr("not", self._parse_not_expr(), self._expr_line_number)
+        return self._parse_comparison_expr()
+
+    def _parse_comparison_expr(self) -> Expr:
+        expr = self._parse_additive_expr()
+        token = self._peek_token()
+        if token.text in {"<", ">", "==", "!=", "<=", ">="}:
+            op = token.text
+            self._advance_token()
+            right = self._parse_additive_expr()
+            next_token = self._peek_token()
+            if next_token.text in {"<", ">", "==", "!=", "<=", ">="}:
+                raise PebbleError(
+                    self._format_parse_error(
+                        self._expr_line_number,
+                        self._expr_prefix,
+                        self._expr_text,
+                        next_token.column,
+                        "chained comparisons are not supported",
                     )
                 )
-            return DictExpr(items=items, line_number=line_number)
+            return BinaryExpr(expr, op, right, self._expr_line_number)
+        return expr
 
-        if isinstance(node, ast.Subscript):
-            return IndexExpr(
-                value=self._convert_expr_node(node.value, line_number),
-                index=self._convert_slice_node(node.slice, line_number),
-                line_number=line_number,
+    def _parse_additive_expr(self) -> Expr:
+        expr = self._parse_multiplicative_expr()
+        while self._peek_token().text in {"+", "-"}:
+            op = self._advance_token().text
+            expr = BinaryExpr(expr, op, self._parse_multiplicative_expr(), self._expr_line_number)
+        return expr
+
+    def _parse_multiplicative_expr(self) -> Expr:
+        expr = self._parse_unary_expr()
+        while self._peek_token().text in {"*", "/"}:
+            op = self._advance_token().text
+            expr = BinaryExpr(expr, op, self._parse_unary_expr(), self._expr_line_number)
+        return expr
+
+    def _parse_unary_expr(self) -> Expr:
+        token = self._peek_token()
+        if token.text == "-":
+            self._advance_token()
+            return UnaryExpr("-", self._parse_unary_expr(), self._expr_line_number)
+        return self._parse_postfix_expr()
+
+    def _parse_postfix_expr(self) -> Expr:
+        expr = self._parse_primary_expr()
+        while 1:
+            token = self._peek_token()
+            if token.text == ".":
+                self._advance_token()
+                attr = self._peek_token()
+                if attr.kind != "IDENT":
+                    raise PebbleError(
+                        self._format_parse_error(
+                            self._expr_line_number,
+                            self._expr_prefix,
+                            self._expr_text,
+                            attr.column,
+                            "expected attribute name after '.'",
+                        )
+                    )
+                self._advance_token()
+                expr = AttrExpr(expr, attr.text, self._expr_line_number)
+                continue
+            if token.text == "(":
+                args = self._parse_call_args()
+                if isinstance(expr, NameExpr):
+                    expr = CallExpr(expr.name, args, self._expr_line_number)
+                    continue
+                if isinstance(expr, AttrExpr):
+                    expr = AttrCallExpr(expr.value, expr.attr, args, self._expr_line_number)
+                    continue
+                raise PebbleError(
+                    self._format_parse_error(
+                        self._expr_line_number,
+                        self._expr_prefix,
+                        self._expr_text,
+                        token.column,
+                        "only simple or module function calls are supported",
+                    )
+                )
+            if token.text == "[":
+                open_bracket = self._advance_token()
+                if self._peek_token().text == ":":
+                    raise PebbleError(
+                        self._format_parse_error(
+                            self._expr_line_number,
+                            self._expr_prefix,
+                            self._expr_text,
+                            self._peek_token().column,
+                            "slicing is not supported",
+                        )
+                    )
+                index = self._parse_or_expr()
+                if self._peek_token().text == ":":
+                    raise PebbleError(
+                        self._format_parse_error(
+                            self._expr_line_number,
+                            self._expr_prefix,
+                            self._expr_text,
+                            self._peek_token().column,
+                            "slicing is not supported",
+                        )
+                    )
+                self._expect_token("]", "expected ']' after index expression")
+                expr = IndexExpr(expr, index, self._expr_line_number)
+                continue
+            break
+        return expr
+
+    def _parse_call_args(self) -> list[Expr]:
+        args: list[Expr] = []
+        self._expect_token("(", "expected '('")
+        if self._match_token(")"):
+            return args
+        while 1:
+            args.append(self._parse_or_expr())
+            if self._match_token(","):
+                if self._peek_token().text == ")":
+                    self._advance_token()
+                    return args
+                continue
+            self._expect_token(")", "expected ')' after function arguments")
+            return args
+
+    def _parse_primary_expr(self) -> Expr:
+        token = self._peek_token()
+        if token.kind == "NUMBER":
+            self._advance_token()
+            return NumberExpr(token.value, self._expr_line_number)
+        if token.kind == "STRING":
+            self._advance_token()
+            return StringExpr(token.value, self._expr_line_number)
+        if token.kind == "IDENT":
+            self._advance_token()
+            if token.text == "True":
+                return BoolExpr(True, self._expr_line_number)
+            if token.text == "False":
+                return BoolExpr(False, self._expr_line_number)
+            if token.text == "None":
+                return NoneExpr(self._expr_line_number)
+            return NameExpr(token.text, self._expr_line_number)
+        if token.text == "(":
+            self._advance_token()
+            expr = self._parse_or_expr()
+            self._expect_token(")", "expected ')' after expression")
+            return expr
+        if token.text == "[":
+            return self._parse_list_literal()
+        if token.text == "{":
+            return self._parse_dict_literal()
+        detail = "unexpected end of expression" if token.kind == "EOF" else f"unexpected token '{token.text}'"
+        raise PebbleError(
+            self._format_parse_error(
+                self._expr_line_number,
+                self._expr_prefix,
+                self._expr_text,
+                token.column,
+                detail,
             )
+        )
 
-        raise PebbleError(f"line {line_number}: unsupported expression")
+    def _parse_list_literal(self) -> Expr:
+        items: list[Expr] = []
+        self._expect_token("[", "expected '['")
+        if self._match_token("]"):
+            return ListExpr(items, self._expr_line_number)
+        while 1:
+            items.append(self._parse_or_expr())
+            if self._match_token(","):
+                if self._peek_token().text == "]":
+                    self._advance_token()
+                    return ListExpr(items, self._expr_line_number)
+                continue
+            self._expect_token("]", "expected ']' after list literal")
+            return ListExpr(items, self._expr_line_number)
 
-    def _convert_slice_node(self, node: ast.AST, line_number: int) -> Expr:
-        if isinstance(node, ast.Slice):
-            raise PebbleError(f"line {line_number}: slicing is not supported")
-        return self._convert_expr_node(node, line_number)
-
-    def _convert_binary_op(self, op: ast.operator, line_number: int) -> str:
-        if isinstance(op, ast.Add):
-            return "+"
-        if isinstance(op, ast.Sub):
-            return "-"
-        if isinstance(op, ast.Mult):
-            return "*"
-        if isinstance(op, ast.Div):
-            return "/"
-        raise PebbleError(f"line {line_number}: unsupported operator")
-
-    def _convert_compare_op(self, op: ast.cmpop, line_number: int) -> str:
-        if isinstance(op, ast.Lt):
-            return "<"
-        if isinstance(op, ast.Gt):
-            return ">"
-        if isinstance(op, ast.Eq):
-            return "=="
-        if isinstance(op, ast.NotEq):
-            return "!="
-        if isinstance(op, ast.LtE):
-            return "<="
-        if isinstance(op, ast.GtE):
-            return ">="
-        raise PebbleError(f"line {line_number}: unsupported comparison operator")
-
-    def _convert_bool_op(self, op: ast.boolop, line_number: int) -> str:
-        if isinstance(op, ast.And):
-            return "and"
-        if isinstance(op, ast.Or):
-            return "or"
-        raise PebbleError(f"line {line_number}: unsupported boolean operator")
+    def _parse_dict_literal(self) -> Expr:
+        items: list[tuple[Expr, Expr]] = []
+        self._expect_token("{", "expected '{'")
+        if self._match_token("}"):
+            return DictExpr(items, self._expr_line_number)
+        while 1:
+            key = self._parse_or_expr()
+            colon = self._peek_token()
+            if colon.text != ":":
+                raise PebbleError(
+                    self._format_parse_error(
+                        self._expr_line_number,
+                        self._expr_prefix,
+                        self._expr_text,
+                        colon.column,
+                        "expected ':' in dict literal",
+                    )
+                )
+            self._advance_token()
+            value = self._parse_or_expr()
+            items.append((key, value))
+            if self._match_token(","):
+                if self._peek_token().text == "}":
+                    self._advance_token()
+                    return DictExpr(items, self._expr_line_number)
+                continue
+            self._expect_token("}", "expected '}' after dict literal")
+            return DictExpr(items, self._expr_line_number)
 
 
 class BytecodeCompiler:
@@ -1006,7 +1287,15 @@ class BytecodeCompiler:
         if isinstance(expr, BinaryExpr):
             return self._compile_expr(expr.left) + self._compile_expr(expr.right) + [("BINARY", expr.op, expr.line_number)]
         if isinstance(expr, BoolOpExpr):
-            return self._compile_expr(expr.left) + self._compile_expr(expr.right) + [("BOOL", expr.op, expr.line_number)]
+            return [
+                (
+                    "BOOL",
+                    expr.op,
+                    self._compile_expr(expr.left),
+                    self._compile_expr(expr.right),
+                    expr.line_number,
+                )
+            ]
         if isinstance(expr, CallExpr):
             code: list[tuple] = []
             for arg in expr.args:
@@ -1383,6 +1672,15 @@ class PebbleInterpreter:
         if isinstance(target, ClassObject):
             return self._instantiate_class(target, args, line_number)
         if isinstance(target, FunctionValue):
+            if target.scope_values is not None and target.scope_functions is not None:
+                return self._call_scoped_function(
+                    target.scope_values,
+                    target.scope_functions,
+                    target.name,
+                    target.function,
+                    args,
+                    line_number,
+                )
             return self._call_function_object(target.name, target.function, args, line_number, local_env)
         if isinstance(target, BoundMethodValue):
             return self._call_bound_method(target, args, line_number, local_env)
@@ -1744,6 +2042,15 @@ class PebbleInterpreter:
             if attr in target.fields:
                 value = target.fields[attr]
                 if isinstance(value, FunctionValue):
+                    if value.scope_values is not None and value.scope_functions is not None:
+                        return self._call_scoped_function(
+                            value.scope_values,
+                            value.scope_functions,
+                            value.name,
+                            value.function,
+                            args,
+                            line_number,
+                        )
                     return self._call_function_object(value.name, value.function, args, line_number, local_env)
                 if isinstance(value, BoundMethodValue):
                     return self._call_bound_method(value, args, line_number, local_env)
@@ -1835,7 +2142,7 @@ class PebbleInterpreter:
             if attr in target.values:
                 return target.values[attr]
             if attr in target.methods:
-                return FunctionValue(target.name + "." + attr, target.methods[attr])
+                return FunctionValue(target.name + "." + attr, target.methods[attr], target.values, target.methods)
             raise PebbleError(f"line {line_number}: class '{target.name}' has no member '{attr}'")
         if isinstance(target, InstanceObject):
             if attr in target.fields:
@@ -1869,7 +2176,7 @@ class PebbleInterpreter:
         if name in self.globals:
             return self.globals[name]
         if name in self.functions:
-            return FunctionValue(name, self.functions[name])
+            return FunctionValue(name, self.functions[name], self.globals, self.functions)
         raise PebbleError(f"line {line_number}: unknown variable '{name}'")
 
     def _bind_imported_module(
@@ -1929,7 +2236,13 @@ class PebbleInterpreter:
         return [self._clone_value(item) for item in value]
 
     def _truthy(self, value: Value) -> bool:
-        return value not in {0, "", None, False} and value != [] and value != {}
+        if value is None or value is False:
+            return False
+        if isinstance(value, (int, float)) and value == 0:
+            return False
+        if value == "" or value == [] or value == {}:
+            return False
+        return True
 
     def _stringify(self, value: Value) -> str:
         if value is None:
@@ -2490,20 +2803,19 @@ class PebbleBytecodeInterpreter(PebbleInterpreter):
                 left = stack.pop()
                 stack.append(self._eval_binary(instr[1], left, right, instr[2]))
             elif op == "BOOL":
-                right = stack.pop()
-                left = stack.pop()
+                left = self._eval_compiled_expr(instr[2], local_env)
                 if instr[1] == "and":
                     if self._truthy(left):
-                        stack.append(right)
+                        stack.append(self._eval_compiled_expr(instr[3], local_env))
                     else:
                         stack.append(left)
                 elif instr[1] == "or":
                     if self._truthy(left):
                         stack.append(left)
                     else:
-                        stack.append(right)
+                        stack.append(self._eval_compiled_expr(instr[3], local_env))
                 else:
-                    raise PebbleError(f"line {instr[2]}: unsupported boolean operator '{instr[1]}'")
+                    raise PebbleError(f"line {instr[4]}: unsupported boolean operator '{instr[1]}'")
             elif op == "CALL":
                 argc = instr[2]
                 args = stack[-argc:] if argc else []

@@ -80,6 +80,54 @@ class FlatFileSystemTests(unittest.TestCase):
 
 
 class PebbleInterpreterTests(unittest.TestCase):
+    def assert_modes_match_output(
+        self,
+        source: str,
+        expected: list[str],
+        *,
+        fs_root: Path | None = None,
+        path_resolver=None,
+        host_functions=None,
+        initial_globals: dict[str, object] | None = None,
+    ) -> None:
+        interpreter_output = PebbleInterpreter(
+            fs_root,
+            path_resolver=path_resolver,
+            host_functions=host_functions,
+        ).execute(source, initial_globals=initial_globals)
+        bytecode_output = PebbleBytecodeInterpreter(
+            fs_root,
+            path_resolver=path_resolver,
+            host_functions=host_functions,
+        ).execute(source, initial_globals=initial_globals)
+        self.assertEqual(interpreter_output, expected)
+        self.assertEqual(bytecode_output, expected)
+
+    def assert_modes_match_error(
+        self,
+        source: str,
+        expected_message: str,
+        *,
+        fs_root: Path | None = None,
+        path_resolver=None,
+        host_functions=None,
+        initial_globals: dict[str, object] | None = None,
+    ) -> None:
+        with self.assertRaises(PebbleError) as interpreter_error:
+            PebbleInterpreter(
+                fs_root,
+                path_resolver=path_resolver,
+                host_functions=host_functions,
+            ).execute(source, initial_globals=initial_globals)
+        with self.assertRaises(PebbleError) as bytecode_error:
+            PebbleBytecodeInterpreter(
+                fs_root,
+                path_resolver=path_resolver,
+                host_functions=host_functions,
+            ).execute(source, initial_globals=initial_globals)
+        self.assertEqual(str(interpreter_error.exception), expected_message)
+        self.assertEqual(str(bytecode_error.exception), expected_message)
+
     def test_runs_assignments_math_and_print(self) -> None:
         source = "\n".join(
             [
@@ -110,6 +158,177 @@ class PebbleInterpreterTests(unittest.TestCase):
         )
         output = PebbleInterpreter().execute(source)
         self.assertEqual(output, ["3.5", "7.0", "3.5", "2.25", "3", "1"])
+
+    def test_language_spec_baseline_control_flow_parity(self) -> None:
+        self.assert_modes_match_output(
+            "\n".join(
+                [
+                    "total = 0",
+                    "for i in range(1, 5):",
+                    "    total = total + i",
+                    "if total == 10:",
+                    '    print "sum-ok"',
+                    "print total",
+                    'print 0 or "fallback"',
+                    'print "x" and "y"',
+                ]
+            ),
+            ["sum-ok", "10", "fallback", "y"],
+        )
+
+    def test_language_spec_baseline_multiline_literals_and_mutation_parity(self) -> None:
+        self.assert_modes_match_output(
+            "\n".join(
+                [
+                    "items = [",
+                    '    "alpha",',
+                    '    "beta",',
+                    "]",
+                    "record = {",
+                    '    "name": "pebble",',
+                    '    "count": len(items),',
+                    "}",
+                    'items[1] = record["name"]',
+                    "print items[1]",
+                    'print record["count"]',
+                ]
+            ),
+            ["pebble", "2"],
+        )
+
+    def test_language_spec_baseline_classes_and_exceptions_parity(self) -> None:
+        self.assert_modes_match_output(
+            "\n".join(
+                [
+                    "class Counter:",
+                    "    STEP = 2",
+                    "    def __init__(self, start):",
+                    "        self.value = start",
+                    "    def inc(self):",
+                    "        self.value = self.value + STEP",
+                    "        return self.value",
+                    "",
+                    "c = Counter(3)",
+                    "m = c.inc",
+                    "print m()",
+                    "try:",
+                    '    raise "boom"',
+                    "except:",
+                    '    print "handled"',
+                ]
+            ),
+            ["5", "handled"],
+        )
+
+    def test_language_spec_baseline_runtime_error_parity(self) -> None:
+        self.assert_modes_match_error(
+            "print [1, 2][1.5]\n",
+            "line 1: index must be an integer",
+        )
+
+    def test_language_conformance_truthiness_and_short_circuit_parity(self) -> None:
+        self.assert_modes_match_output(
+            "\n".join(
+                [
+                    "if []:",
+                    '    print "bad-list"',
+                    "else:",
+                    '    print "empty-list"',
+                    "if 0.0:",
+                    '    print "bad-zero-float"',
+                    "else:",
+                    '    print "zero-float"',
+                    "if {}:",
+                    '    print "bad-dict"',
+                    "else:",
+                    '    print "empty-dict"',
+                    "print 0 and missing_name",
+                    "print 1 or missing_name",
+                    "print not []",
+                    "print not 1",
+                ]
+            ),
+            ["empty-list", "zero-float", "empty-dict", "0", "1", "True", "False"],
+        )
+
+    def test_language_conformance_value_semantics_parity(self) -> None:
+        self.assert_modes_match_output(
+            "\n".join(
+                [
+                    "def grow(items):",
+                    "    append(items, 9)",
+                    "    return len(items)",
+                    "data = [1, 2]",
+                    "alias = data",
+                    "print grow(data)",
+                    "print len(data)",
+                    "append(alias, 7)",
+                    "print len(data)",
+                    "print len(alias)",
+                    'record = {"count": 1}',
+                    "copy = record",
+                    'copy["count"] = 9',
+                    'print record["count"]',
+                    'print copy["count"]',
+                ]
+            ),
+            ["3", "2", "2", "3", "1", "9"],
+        )
+
+    def test_language_conformance_function_values_and_implicit_return_parity(self) -> None:
+        self.assert_modes_match_output(
+            "\n".join(
+                [
+                    "def choose(flag, left, right):",
+                    "    if flag:",
+                    "        return left",
+                    "    return right",
+                    "def noop():",
+                    "    pass",
+                    "chooser = choose",
+                    'print chooser(1, "A", "B")',
+                    'print chooser(0, "A", "B")',
+                    "print noop()",
+                ]
+            ),
+            ["A", "B", "0"],
+        )
+
+    def test_language_conformance_nested_import_parity(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            nested_dir = Path(temp_dir) / "pkg"
+            nested_dir.mkdir()
+            (nested_dir / "ops.peb").write_text(
+                "\n".join(
+                    [
+                        "VALUE = 8",
+                        "def dec(x):",
+                        "    return x - 1",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            self.assert_modes_match_output(
+                "\n".join(
+                    [
+                        "import pkg.ops",
+                        "print pkg.ops.VALUE",
+                        "print pkg.ops.dec(9)",
+                    ]
+                ),
+                ["8", "8"],
+                fs_root=Path(temp_dir),
+            )
+
+    def test_language_conformance_parse_and_runtime_error_parity(self) -> None:
+        self.assert_modes_match_error(
+            "print [1, 2][0:1]\n",
+            "line 1: invalid expression at column 9: slicing is not supported\n[1, 2][0:1]\n        ^",
+        )
+        self.assert_modes_match_error(
+            "print len(3)\n",
+            "line 1: len() expects a string, list, or dict",
+        )
 
     def test_interpreter_supports_multiline_bracketed_expressions(self) -> None:
         output = PebbleInterpreter().execute(
@@ -250,6 +469,66 @@ class PebbleInterpreterTests(unittest.TestCase):
         )
         self.assertEqual(interpreter.run_until_complete(), ["5"])
 
+    def test_interpreter_function_values_keep_module_scope_across_imported_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            module_path = Path(temp_dir) / "callbacklib.peb"
+            module_path.write_text(
+                "\n".join(
+                    [
+                        "def run(fn, value):",
+                        "    return fn(value)",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            output = PebbleInterpreter(
+                path_resolver=lambda name: resolve_repo_system_path(name)
+                if name.startswith("system/")
+                else Path(temp_dir) / name,
+            ).execute(
+                "\n".join(
+                    [
+                        "def helper(x):",
+                        "    return x + 1",
+                        "def wrapper(x):",
+                        "    return helper(x)",
+                        "import callbacklib",
+                        "print callbacklib.run(wrapper, 4)",
+                    ]
+                )
+            )
+        self.assertEqual(output, ["5"])
+
+    def test_bytecode_function_values_keep_module_scope_across_imported_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            module_path = Path(temp_dir) / "callbacklib.peb"
+            module_path.write_text(
+                "\n".join(
+                    [
+                        "def run(fn, value):",
+                        "    return fn(value)",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            output = PebbleBytecodeInterpreter(
+                path_resolver=lambda name: resolve_repo_system_path(name)
+                if name.startswith("system/")
+                else Path(temp_dir) / name,
+            ).execute(
+                "\n".join(
+                    [
+                        "def helper(x):",
+                        "    return x + 1",
+                        "def wrapper(x):",
+                        "    return helper(x)",
+                        "import callbacklib",
+                        "print callbacklib.run(wrapper, 4)",
+                    ]
+                )
+            )
+        self.assertEqual(output, ["5"])
+
     def test_bytecode_supports_multiline_bracketed_expressions(self) -> None:
         interpreter = PebbleBytecodeInterpreter()
         interpreter.prepare(
@@ -322,6 +601,30 @@ class PebbleInterpreterTests(unittest.TestCase):
         with self.assertRaises(PebbleError):
             PebbleInterpreter().execute("if 1:\n  print 1")
 
+    def test_reports_unterminated_bracket_with_open_location(self) -> None:
+        with self.assertRaises(PebbleError) as ctx:
+            PebbleInterpreter().execute("items = [\n    1")
+        self.assertEqual(
+            str(ctx.exception),
+            "line 1: unterminated bracketed expression; '[' opened at line 1 column 9",
+        )
+
+    def test_reports_mismatched_closing_bracket_with_open_location(self) -> None:
+        with self.assertRaises(PebbleError) as ctx:
+            PebbleInterpreter().execute("items = [1)")
+        self.assertEqual(
+            str(ctx.exception),
+            "line 1: closing bracket ')' at column 11 does not match '[' opened at line 1 column 9",
+        )
+
+    def test_reports_unexpected_indentation_levels(self) -> None:
+        with self.assertRaises(PebbleError) as ctx:
+            PebbleInterpreter().execute("print 1\n    print 2")
+        self.assertEqual(
+            str(ctx.exception),
+            "line 2: unexpected indentation; expected level 0, got level 1",
+        )
+
     def test_rejects_return_outside_function(self) -> None:
         with self.assertRaises(PebbleError):
             PebbleInterpreter().execute("return 1")
@@ -329,6 +632,22 @@ class PebbleInterpreterTests(unittest.TestCase):
     def test_rejects_standalone_else(self) -> None:
         with self.assertRaises(PebbleError):
             PebbleInterpreter().execute("else:\n    print 1")
+
+    def test_reports_expression_syntax_errors_with_column_context(self) -> None:
+        with self.assertRaises(PebbleError) as ctx:
+            PebbleInterpreter().execute("print 1 +")
+        message = str(ctx.exception)
+        self.assertIn("line 1: invalid expression at column", message)
+        self.assertIn("1 +", message)
+        self.assertIn("^", message)
+
+    def test_reports_assignment_target_syntax_errors_with_column_context(self) -> None:
+        with self.assertRaises(PebbleError) as ctx:
+            PebbleInterpreter().execute("a b = 1")
+        message = str(ctx.exception)
+        self.assertIn("line 1: invalid assignment target at column", message)
+        self.assertIn("a b", message)
+        self.assertIn("^", message)
 
     def test_supports_while_strings_lists_and_index_assignment(self) -> None:
         source = "\n".join(
@@ -696,6 +1015,26 @@ class PebbleInterpreterTests(unittest.TestCase):
             initial_globals={"FS_MODE": "hostfs"},
         )
         self.assertEqual(output, ["200", "pong"])
+
+    def test_import_tui_module_exposes_layout_helpers(self) -> None:
+        runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
+        output = PebbleInterpreter(
+            path_resolver=resolve_repo_system_path,
+        ).execute(
+            runtime_source
+            + "\n".join(
+                [
+                    "",
+                    "import system.lib.tui",
+                    'print system.lib.tui.pad_right("hi", 5)',
+                    'print system.lib.tui.center_text("hi", 6)',
+                    'print system.lib.tui.parse_words("one two  three")',
+                    'print system.lib.tui.wrap_text("alpha beta gamma", 8)',
+                ]
+            ),
+            initial_globals={"FS_MODE": "hostfs"},
+        )
+        self.assertEqual(output, ["hi   ", "  hi  ", "[one, two, three]", "[alpha, beta, gamma]"])
 
     def test_version_and_uname_commands_report_current_release(self) -> None:
         runtime_source = Path("pebble_system/runtime.peb").read_text(encoding="utf-8")
@@ -1932,6 +2271,22 @@ class PebbleShellSmokeTests(unittest.TestCase):
         self.assertIn("/dev/tty", outputs)
         self.assertTrue(any(line.startswith("mode=") for line in outputs))
 
+    def test_help_ui_demo_describes_reference_tui_app(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("help ui_demo")
+        self.assertIn("ui_demo [--once] [--reset]", outputs)
+        self.assertTrue(any("system.lib.tui" in line for line in outputs))
+
+    def test_ui_demo_once_renders_reference_tui(self) -> None:
+        shell = build_shell(fs_mode="mfs")
+        with patch("sys.stdin.isatty", return_value=False):
+            shell.onecmd("ui_demo --reset --once")
+        state_file = shell.fs.resolve_path(".__ui_demo_state__.txt")
+        self.assertTrue(state_file.exists())
+        self.assertIn("selected|", state_file.read_text(encoding="utf-8"))
+
 
 @slow_test
 class PebbleShellRuntimeTests(unittest.TestCase):
@@ -2540,6 +2895,26 @@ class PebbleShellRuntimeTests(unittest.TestCase):
         with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
             shell.onecmd("welcome")
         self.assertIn("Welcome tour finished.", outputs)
+
+    def test_run_reports_user_file_expression_parse_error_lines(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("run parser_error_expr.peb")
+        joined = "\n".join(outputs)
+        self.assertIn("parser_error_expr.peb:1: invalid expression", joined)
+        self.assertNotIn("line 14:", joined)
+        self.assertNotIn("line 1490:", joined)
+
+    def test_run_reports_user_file_bracket_parse_error_lines(self) -> None:
+        shell = build_shell()
+        outputs: list[str] = []
+        with patch("builtins.print", side_effect=lambda *parts, **kwargs: outputs.append(" ".join(str(part) for part in parts))):
+            shell.onecmd("run parser_error_bracket.peb")
+        joined = "\n".join(outputs)
+        self.assertIn("parser_error_bracket.peb:1: unterminated bracketed expression", joined)
+        self.assertIn("opened at line 1 column 9", joined)
+        self.assertNotIn("line 1490", joined)
 
     def test_wc_counts_file_contents(self) -> None:
         shell = build_shell()
@@ -3639,6 +4014,14 @@ class PebbleShellRuntimeTests(unittest.TestCase):
                 target.unlink()
 
         self.assertTrue(any(line.startswith("saved ") for line in outputs))
+
+    def test_ui_demo_once_renders_reference_tui_and_persists_state(self) -> None:
+        shell = build_shell(fs_mode="mfs")
+        with patch("sys.stdin.isatty", return_value=False):
+            shell.onecmd("ui_demo --reset --once")
+        state_file = shell.fs.resolve_path(".__ui_demo_state__.txt")
+        self.assertTrue(state_file.exists())
+        self.assertIn("selected|", state_file.read_text(encoding="utf-8"))
 
     def test_chat_command_uses_environment_configuration(self) -> None:
         shell = build_shell()

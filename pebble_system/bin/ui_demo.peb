@@ -1,0 +1,137 @@
+import system.lib.tui
+
+UI_DEMO_STATE_FILE = ".__ui_demo_state__.txt"
+
+def new_state():
+    topics = []
+    append(topics, {"title": "Loop", "body": "system.lib.tui.run_app centralizes terminal setup, redraw timing, key polling, and cleanup so apps can focus on state transitions."})
+    append(topics, {"title": "Chrome", "body": "draw_title, draw_footer, draw_box, and text helpers create consistent screen chrome instead of each app reimplementing borders and spacing."})
+    append(topics, {"title": "Persistence", "body": "read_kv_file and write_kv_file provide a minimal persistence layer for text apps that need to survive Pebble shell re-entry."})
+    append(topics, {"title": "Input", "body": "The framework routes each key through a callback. This keeps navigation logic local to the app while standardizing the event loop."})
+    append(topics, {"title": "Layout", "body": "pad_right, center_text, wrap_text, and draw helpers make it easier to build sidebars, detail panes, and status lines on small terminals."})
+    return {"selected": 0, "frame": 0, "status": "ready", "visits": 0, "topics": topics}
+
+def load_state():
+    raw = system.lib.tui.read_kv_file(UI_DEMO_STATE_FILE)
+    if len(keys(raw)) == 0:
+        return new_state()
+    state = new_state()
+    if system.lib.tui.key_exists(raw, "selected"):
+        state["selected"] = int(raw["selected"])
+    if system.lib.tui.key_exists(raw, "frame"):
+        state["frame"] = int(raw["frame"])
+    if system.lib.tui.key_exists(raw, "status"):
+        state["status"] = raw["status"]
+    if system.lib.tui.key_exists(raw, "visits"):
+        state["visits"] = int(raw["visits"])
+    if state["selected"] < 0:
+        state["selected"] = 0
+    if state["selected"] >= len(state["topics"]):
+        state["selected"] = len(state["topics"]) - 1
+    return state
+
+def save_state(state):
+    system.lib.tui.write_kv_file(UI_DEMO_STATE_FILE, {"selected": str(state["selected"]), "frame": str(state["frame"]), "status": state["status"], "visits": str(state["visits"])})
+    return 0
+
+def clear_state():
+    if file_exists(UI_DEMO_STATE_FILE):
+        delete_file(UI_DEMO_STATE_FILE)
+    return 0
+
+def render_app(state, width, height, title, footer):
+    system.lib.tui.draw_title(width, title + "  frame " + str(state["frame"]))
+    if height >= 3:
+        system.lib.tui.draw_blank_rows(width, 3, height)
+    side_width = 18
+    if side_width > width - 12:
+        side_width = int(width / 3)
+    detail_width = width - side_width - 1
+    if detail_width < 12:
+        detail_width = 12
+    content_height = height - 3
+    if content_height >= 4:
+        system.lib.tui.draw_box(3, 1, side_width, content_height)
+        system.lib.tui.draw_text_padded(3, 2, " Topics ", side_width - 2)
+        i = 0
+        while i < len(state["topics"]) and i < content_height - 2:
+            prefix = " "
+            if i == state["selected"]:
+                prefix = ">"
+            label = prefix + " " + state["topics"][i]["title"]
+            system.lib.tui.draw_text_padded(4 + i, 2, label, side_width - 2)
+            i = i + 1
+        system.lib.tui.draw_box(3, side_width + 1, detail_width, content_height)
+        inner_width = detail_width - 2
+        body_width = inner_width - 2
+        if body_width < 8:
+            body_width = inner_width
+        topic = state["topics"][state["selected"]]
+        system.lib.tui.draw_text_padded(3, side_width + 2, " Detail ", inner_width)
+        system.lib.tui.draw_text_padded(4, side_width + 2, topic["title"], inner_width)
+        lines = system.lib.tui.wrap_text(topic["body"], body_width)
+        i = 0
+        while i < len(lines) and i < content_height - 4:
+            system.lib.tui.draw_text_padded(6 + i, side_width + 3, lines[i], body_width)
+            i = i + 1
+        system.lib.tui.draw_text_padded(3 + content_height - 2, side_width + 2, "status: " + state["status"] + "  visits: " + str(state["visits"]), inner_width)
+    if height >= 2:
+        selection_text = "selected " + str(state["selected"] + 1) + "/" + str(len(state["topics"]))
+        system.lib.tui.draw_footer(height, width, footer, selection_text)
+    return 0
+
+def key_app(state, key, width, height):
+    topic_total = len(state["topics"])
+    if key == "j" or key == "DOWN":
+        next_selected = state["selected"] + 1
+        if next_selected >= topic_total:
+            next_selected = 0
+        next_state = {"selected": next_selected, "frame": state["frame"], "status": "moved down", "visits": state["visits"] + 1, "topics": state["topics"]}
+        system.lib.tui.write_kv_file(".__ui_demo_state__.txt", {"selected": str(next_state["selected"]), "frame": str(next_state["frame"]), "status": next_state["status"], "visits": str(next_state["visits"])})
+        return system.lib.tui.event_keep(next_state)
+    if key == "k" or key == "UP":
+        next_selected = state["selected"] - 1
+        if next_selected < 0:
+            next_selected = topic_total - 1
+        next_state = {"selected": next_selected, "frame": state["frame"], "status": "moved up", "visits": state["visits"] + 1, "topics": state["topics"]}
+        system.lib.tui.write_kv_file(".__ui_demo_state__.txt", {"selected": str(next_state["selected"]), "frame": str(next_state["frame"]), "status": next_state["status"], "visits": str(next_state["visits"])})
+        return system.lib.tui.event_keep(next_state)
+    if key == "r" or key == "R":
+        next_state = {"selected": 0, "frame": 0, "status": "reset", "visits": state["visits"], "topics": state["topics"]}
+        system.lib.tui.write_kv_file(".__ui_demo_state__.txt", {"selected": str(next_state["selected"]), "frame": str(next_state["frame"]), "status": next_state["status"], "visits": str(next_state["visits"])})
+        return system.lib.tui.event_keep(next_state)
+    if key == "s" or key == "S":
+        next_state = {"selected": state["selected"], "frame": state["frame"], "status": "saved", "visits": state["visits"], "topics": state["topics"]}
+        system.lib.tui.write_kv_file(".__ui_demo_state__.txt", {"selected": str(next_state["selected"]), "frame": str(next_state["frame"]), "status": next_state["status"], "visits": str(next_state["visits"])})
+        return system.lib.tui.event_keep(next_state)
+    return system.lib.tui.event_keep(state)
+
+def tick_app(state, width, height):
+    next_state = {"selected": state["selected"], "frame": state["frame"] + 1, "status": state["status"], "visits": state["visits"], "topics": state["topics"]}
+    return system.lib.tui.event_keep(next_state)
+
+def usage():
+    print "ui_demo [--once] [--reset]"
+    print "reference app for system.lib.tui"
+
+run_once = 0
+do_reset = 0
+bad_args = 0
+i = 0
+while i < ARGC:
+    arg = ARGV[i]
+    if arg == "--once":
+        run_once = 1
+    elif arg == "--reset":
+        do_reset = 1
+    else:
+        usage()
+        bad_args = 1
+    i = i + 1
+
+if bad_args == 0:
+    if do_reset:
+        clear_state()
+    state = load_state()
+    result = system.lib.tui.run_app("Pebble TUI demo", "j/k move  s save  r reset  q quit", 120, 48, 12, "terminal too small for ui_demo", run_once, state, render_app, key_app, tick_app)
+    save_state(result)
